@@ -7,11 +7,12 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "local"
 
     DATABASE_URL: str
+    REDIS_URL: str = "redis://localhost:6379/0"
 
     SECRET_KEY: str
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    SESSION_COOKIE_NAME: str = "session_id"
+    SESSION_EXPIRE_MINUTES: int = 60 * 24 * 14
 
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
