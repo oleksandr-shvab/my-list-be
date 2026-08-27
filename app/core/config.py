@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "local"
 
     DATABASE_URL: str
+    TEST_DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/item_list_test"
     REDIS_URL: str = "redis://localhost:6379/0"
 
     SECRET_KEY: str
