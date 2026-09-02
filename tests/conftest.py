@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 
 from app.core.config import settings
 from app.core.db import Base, get_db
+from app.core.redis import redis_client
 from app.main import app
 
 
@@ -48,7 +49,9 @@ async def engine() -> AsyncGenerator[AsyncEngine, None]:
 async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
     async with engine.connect() as conn:
         trans = await conn.begin()
-        session = AsyncSession(bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False)
+        session = AsyncSession(
+            bind=conn, join_transaction_mode="create_savepoint", expire_on_commit=False
+        )
         try:
             yield session
         finally:
@@ -66,3 +69,12 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+async def clean_redis() -> AsyncGenerator[None, None]:
+    yield
+    async for key in redis_client.scan_iter(match="password_reset*"):
+        await redis_client.delete(key)
+    async for key in redis_client.scan_iter(match="session:*"):
+        await redis_client.delete(key)
