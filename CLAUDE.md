@@ -72,5 +72,10 @@ Directory naming (`app/`, `app/api/`, `app/core/`) borrows from the [full-stack-
 - Tests: pytest + pytest-asyncio + httpx `ASGITransport`
 - Lint/format: ruff
 
+## Backend conventions
+Service/repository layering rules and style conventions live in project skills, not here, since they're only relevant while actively writing router/service/repository code — see `fastapi-service-patterns` and `dynamic-category-schema` under `.claude/skills/`.
+
 ## Related
 Frontend repo: `item-list-frontend` (has its own `CLAUDE.md` with the corresponding frontend-side decisions)
+
+Cross-repo contract lives in `../CONTRACTS.md` — check/update it when changing anything on the FE/BE boundary.
