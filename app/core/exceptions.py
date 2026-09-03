@@ -26,3 +26,8 @@ class NotAuthenticatedError(AppException):
 class InvalidOrExpiredResetTokenError(AppException):
     status_code = 400
     detail = "Invalid or expired reset token"
+
+
+class IncorrectPasswordError(AppException):
+    status_code = 400
+    detail = "Incorrect password"

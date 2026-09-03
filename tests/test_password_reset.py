@@ -12,6 +12,7 @@ from app.crud.password_reset import (
     create_password_reset_token,
     get_password_reset_user_id,
 )
+from app.crud.session import create_session, get_session
 from app.crud.user import authenticate_user, create_user
 
 GENERIC_FORGOT_PASSWORD_DETAIL = "If an account with that email exists, a reset link has been sent."
@@ -60,6 +61,16 @@ async def test__reset_password__token_is_single_use(db_session: AsyncSession) ->
 
     with pytest.raises(InvalidOrExpiredResetTokenError):
         await service.reset_password(db_session, token, "AnotherPass123")
+
+
+async def test__reset_password__revokes_all_sessions(db_session: AsyncSession) -> None:
+    user = await create_user(db_session, email="revokeall@example.com", password="OldPass123")
+    token = await create_session(user.id)
+    reset_token = await create_password_reset_token(user.id)
+
+    await service.reset_password(db_session, reset_token, "NewPass123")
+
+    assert await get_session(token) is None
 
 
 def test__reset_password_request__mismatched_passwords_raises() -> None:

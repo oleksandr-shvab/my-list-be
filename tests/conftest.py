@@ -78,3 +78,5 @@ async def clean_redis() -> AsyncGenerator[None, None]:
         await redis_client.delete(key)
     async for key in redis_client.scan_iter(match="session:*"):
         await redis_client.delete(key)
+    async for key in redis_client.scan_iter(match="sessions_user:*"):
+        await redis_client.delete(key)

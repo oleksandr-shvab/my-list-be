@@ -1,18 +1,27 @@
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.email import send_password_reset_email
 from app.core.exceptions import (
     EmailAlreadyRegisteredError,
+    IncorrectPasswordError,
     InvalidCredentialsError,
     InvalidOrExpiredResetTokenError,
 )
+from app.core.security import verify_password
 from app.crud.password_reset import (
     create_password_reset_token,
     delete_password_reset_token,
     get_password_reset_user_id,
 )
-from app.crud.session import create_session, delete_session
+from app.crud.session import (
+    create_session,
+    delete_session,
+    revoke_all_sessions,
+    revoke_other_sessions,
+)
 from app.crud.user import (
     authenticate_user,
     create_user,
@@ -21,6 +30,8 @@ from app.crud.user import (
     update_user_password,
 )
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 
 async def register(db: AsyncSession, email: str, password: str) -> tuple[User, str]:
@@ -60,3 +71,21 @@ async def reset_password(db: AsyncSession, token: str, new_password: str) -> Non
         raise InvalidOrExpiredResetTokenError()
     await update_user_password(db, user, new_password)
     await delete_password_reset_token(token, user_id)
+    try:
+        await revoke_all_sessions(user_id)
+    except Exception:
+        logger.exception("Failed to revoke sessions for user %s after password reset", user_id)
+
+
+async def update_password(
+    db: AsyncSession, user: User, current_token: str, old_password: str, new_password: str
+) -> None:
+    if not verify_password(old_password, user.hashed_password):
+        raise IncorrectPasswordError()
+    await update_user_password(db, user, new_password)
+    try:
+        await revoke_other_sessions(user.id, keep_token=current_token)
+    except Exception:
+        logger.exception(
+            "Failed to revoke other sessions for user %s after password update", user.id
+        )
