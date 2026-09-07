@@ -63,10 +63,28 @@ implemented in `app/auth/`).
 
 ## Tests
 
-- Every endpoint touched in a PR needs at least one test. Not optional.
-  Use this repo's `tests/conftest.py` fixtures (`client`, `db_session`) —
+Keep the suite cheap per feature — it has to stay cheap at 100 features, not
+just at 1.
+
+- Every new or changed endpoint gets exactly one request/response test
+  through the `client` fixture — the happy path only (e.g. one test per
+  `list`/`get`/`create`/`update`/`delete` action touched), asserting status
+  code and response shape. This is the regression guard against breaking the
+  endpoint later; it is not the place to enumerate error branches.
+- Beyond that, add **1–3 small unit tests total per feature**, not per
+  corner case — pick the 1–3 pieces of genuinely novel/risky logic (e.g. a
+  custom invalidation rule, a single-use/idempotency guarantee, a non-trivial
+  validator) and test those directly against the function (`service.*`,
+  `crud.*`, a schema validator), skipping the `client`/DB-fixture overhead.
+  Simple guard clauses that mirror a pattern already proven elsewhere (e.g.
+  another `not user.is_active` check, a bare `Field(min_length=...)`) don't
+  each need their own test — they're covered by the pattern already being
+  correct, not by re-proving it per feature.
+- Use this repo's `tests/conftest.py` fixtures (`client`, `db_session`) —
   see `CLAUDE.md`'s Project state section for how they're wired (per-test
   transaction rollback via savepoint, `get_db` overridden to `db_session`).
+- Naming: `test__<what_we_test>__<expected_result>`, e.g.
+  `test__list_users__ok`, `test__create_password_reset_token__invalidates_previous`.
 
 ## FastAPI/async-specific (not in the Django source, added for this stack)
 

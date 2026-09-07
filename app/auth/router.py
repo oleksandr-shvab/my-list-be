@@ -4,8 +4,16 @@ from fastapi import APIRouter, Cookie, Response
 
 from app.api.deps import CurrentUser, SessionDep
 from app.auth import service
-from app.auth.schemas import UserLogin, UserRead, UserRegister
+from app.auth.schemas import (
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    UpdatePasswordRequest,
+    UserLogin,
+    UserRead,
+    UserRegister,
+)
 from app.core.config import settings
+from app.core.exceptions import NotAuthenticatedError
 
 router = APIRouter()
 
@@ -55,3 +63,28 @@ async def logout(
 @router.get("/me", response_model=UserRead)
 async def me(current_user: CurrentUser) -> UserRead:
     return current_user
+
+
+@router.post("/forgot-password", status_code=202)
+async def forgot_password(payload: ForgotPasswordRequest, db: SessionDep) -> dict[str, str]:
+    await service.request_password_reset(db, payload.email)
+    return {"detail": "If an account with that email exists, a reset link has been sent."}
+
+
+@router.post("/reset-password", status_code=204)
+async def reset_password(payload: ResetPasswordRequest, db: SessionDep) -> None:
+    await service.reset_password(db, payload.token, payload.new_password)
+
+
+@router.post("/update-password", status_code=204)
+async def update_password(
+    payload: UpdatePasswordRequest,
+    db: SessionDep,
+    current_user: CurrentUser,
+    session_id: Annotated[str | None, Cookie(alias=settings.SESSION_COOKIE_NAME)] = None,
+) -> None:
+    if session_id is None:
+        raise NotAuthenticatedError()
+    await service.update_password(
+        db, current_user, session_id, payload.old_password, payload.new_password
+    )

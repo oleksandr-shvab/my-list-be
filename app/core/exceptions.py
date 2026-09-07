@@ -21,3 +21,13 @@ class InvalidCredentialsError(AppException):
 class NotAuthenticatedError(AppException):
     status_code = 401
     detail = "Not authenticated"
+
+
+class InvalidOrExpiredResetTokenError(AppException):
+    status_code = 400
+    detail = "Invalid or expired reset token"
+
+
+class IncorrectPasswordError(AppException):
+    status_code = 400
+    detail = "Incorrect password"

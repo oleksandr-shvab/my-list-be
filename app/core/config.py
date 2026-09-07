@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     SESSION_COOKIE_NAME: str = "session_id"
     SESSION_EXPIRE_MINUTES: int = 60 * 24 * 14
 
+    FRONTEND_URL: str = "http://localhost:5173"
+
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
 
