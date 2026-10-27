@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Dependency management runs on pip + `.venv`, with dependencies pinned in `requirements.txt` (runtime) and `requirements-dev.txt` (dev-only, `-r requirements.txt` plus test/lint tools). Core infra (`app/core/config.py` Settings, `app/core/db.py` async engine/session, Alembic under `app/alembic/`) is wired up. `items` and `categories` domains are intentionally not scaffolded yet — they'll be added when development reaches them. `app/auth/` is implemented: register/login/logout via Redis-backed sessions (`POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`) — password reset/forgot-password is intentionally not built yet. There is no test suite yet — no test files exist — but the pytest harness is wired up: `tests/conftest.py` provides session-scoped `engine` (auto-creates `TEST_DATABASE_URL`'s database, creates/drops all tables), function-scoped `db_session` (one transaction per test, rolled back after via a savepoint-joined `AsyncSession`, so `service`-layer `commit()` calls don't leak between tests), and `client` (httpx `ASGITransport` client with `get_db` overridden to `db_session`). `asyncio_default_fixture_loop_scope`/`asyncio_default_test_loop_scope` are pinned to `session` in `pyproject.toml` so the session-scoped engine and per-test event loops don't end up on different asyncio loops (a real asyncpg failure mode otherwise). `TEST_DATABASE_URL` defaults to the same host/port as `DATABASE_URL` with a `_test` suffix.
+Dependency management runs on uv: direct dependencies are in `pyproject.toml` (runtime under `[project]`, test and lint tools under the `dev` group) and every version, direct or transitive, is pinned in `uv.lock`. Core infra (`app/core/config.py` Settings, `app/core/db.py` async engine/session, Alembic under `app/alembic/`) is wired up. `items` and `categories` domains are intentionally not scaffolded yet — they'll be added when development reaches them. `app/auth/` is implemented: register/login/logout via Redis-backed sessions (`POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`) — password reset/forgot-password is intentionally not built yet. There is no test suite yet — no test files exist — but the pytest harness is wired up: `tests/conftest.py` provides session-scoped `engine` (auto-creates `TEST_DATABASE_URL`'s database, creates/drops all tables), function-scoped `db_session` (one transaction per test, rolled back after via a savepoint-joined `AsyncSession`, so `service`-layer `commit()` calls don't leak between tests), and `client` (httpx `ASGITransport` client with `get_db` overridden to `db_session`). `asyncio_default_fixture_loop_scope`/`asyncio_default_test_loop_scope` are pinned to `session` in `pyproject.toml` so the session-scoped engine and per-test event loops don't end up on different asyncio loops (a real asyncpg failure mode otherwise). `TEST_DATABASE_URL` defaults to the same host/port as `DATABASE_URL` with a `_test` suffix.
 
 `redis` is now installed and used for auth session storage (`app/core/redis.py`). `arq` and an S3/MinIO client are still named in the Stack below but **not yet installed** — they're needed for background jobs and image storage, both tied to the `items` domain, so add them when that work resumes rather than now.
 
@@ -14,30 +14,30 @@ Errors, health and config (2026-10-27): every error body follows the contract in
 
 ## Commands
 
-Set up the venv (Python 3.12 — the system default may be newer; if `python3.12 -m venv` fails with an `ensurepip` error, the `python3.12-venv` system package isn't installed, or bootstrap pip manually with `get-pip.py`):
+Install uv (https://docs.astral.sh/uv/), then set up the venv (Python 3.12, from `.python-version`; uv downloads it if the system has another):
 ```
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
+uv sync            # creates .venv and installs exactly what uv.lock says (runtime + dev)
 ```
 
 Run the dev server (auto-reload):
 ```
-.venv/bin/uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 The app serves on `http://127.0.0.1:8000` by default. In dev, reach it via `http://localhost:8000` (not `127.0.0.1:8000`) from the frontend — the session cookie is host-scoped, and `127.0.0.1`/`localhost` are different hosts for cookie purposes, so a cookie set via `127.0.0.1` won't round-trip to a `localhost:5173` origin. `localhost` already resolves to `127.0.0.1`, so no bind-host change is needed, just consistent hostnames on both sides.
 
 Other common commands:
 ```
-.venv/bin/pip install <pkg>                                   # add a dependency, then re-freeze (see below)
-.venv/bin/ruff check .                                         # lint
-.venv/bin/ruff format .                                        # format
-.venv/bin/pytest                                                # run tests
-.venv/bin/alembic revision --autogenerate -m "message"          # new migration
-.venv/bin/alembic upgrade head                                  # apply migrations
+uv add <pkg>                                   # add a runtime dependency (uv add --dev <pkg> for tools); updates pyproject.toml and uv.lock
+uv lock --upgrade-package <pkg>                # upgrade one package in uv.lock
+uv run ruff check .                            # lint
+uv run ruff format .                           # format
+uv run pytest                                  # run tests (needs Postgres and Redis, see below)
+uv run alembic revision --autogenerate -m "message"   # new migration
+uv run alembic upgrade head                    # apply migrations
 ```
 
-When adding a package: install it, then update `requirements.txt` (runtime) or `requirements-dev.txt` (dev-only) to match — there's no lockfile/resolver doing this automatically, so pin the version by hand or via `pip freeze`.
+Commit `uv.lock` with every dependency change; CI runs `uv sync --locked` and fails when the lock is stale.
 
 Copy `.env.example` to `.env` and adjust values before running anything that touches the DB (`DATABASE_URL` points at Postgres; no docker-compose exists yet, so a local/external Postgres instance is assumed).
 
@@ -50,7 +50,7 @@ This is a learning/practice project built deliberately with production-grade pat
 FastAPI backend only. Frontend is a separate repo (`item-list-frontend`), a Vite/React SPA running at `http://localhost:5173` in dev.
 
 ## Stack
-- FastAPI, Python 3.12, managed with **pip** (`requirements.txt` + `requirements-dev.txt`, `.venv` activated per-command via `.venv/bin/...` or a sourced shell)
+- FastAPI, Python 3.12, managed with **uv** (`pyproject.toml` + `uv.lock`, `.venv` created by `uv sync`)
 - SQLAlchemy 2.0 **async** + asyncpg, PostgreSQL
 - Alembic (async template) for migrations
 - arq + Redis for background jobs (e.g. thumbnail generation after upload)
@@ -69,7 +69,7 @@ Directory naming (`app/`, `app/api/`, `app/core/`) borrows from the [full-stack-
 - **CORS**: allow `http://localhost:5173` in dev. This becomes real production config later (whatever domain the frontend deploys to), not just a local convenience to remove.
 
 ## Conventions
-- Run everything through `.venv/bin/...` (or activate the venv in your shell) — no dependency lockfile, so `requirements*.txt` are the source of truth for pinned versions
+- Run everything through `uv run ...` (or `.venv/bin/...`); `uv.lock` is the source of truth for pinned versions
 - Async all the way through DB access; sync only for genuinely CPU-bound or blocking code
 - Tests: pytest + pytest-asyncio + httpx `ASGITransport`
 - Lint/format: ruff
