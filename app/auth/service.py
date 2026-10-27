@@ -80,7 +80,7 @@ async def reset_password(db: AsyncSession, token: str, new_password: str) -> Non
 async def update_password(
     db: AsyncSession, user: User, current_token: str, old_password: str, new_password: str
 ) -> None:
-    if not verify_password(old_password, user.hashed_password):
+    if not await verify_password(old_password, user.hashed_password):
         raise IncorrectPasswordError()
     await update_user_password(db, user, new_password)
     try:

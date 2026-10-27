@@ -25,7 +25,7 @@ def _set_session_cookie(response: Response, token: str) -> None:
         max_age=settings.SESSION_EXPIRE_MINUTES * 60,
         path="/",
         httponly=True,
-        secure=settings.ENVIRONMENT != "local",
+        secure=settings.is_cookie_secure,
         samesite="lax",
     )
 
@@ -55,7 +55,7 @@ async def logout(
         key=settings.SESSION_COOKIE_NAME,
         path="/",
         httponly=True,
-        secure=settings.ENVIRONMENT != "local",
+        secure=settings.is_cookie_secure,
         samesite="lax",
     )
 

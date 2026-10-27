@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 
 class UserRegister(BaseModel):
@@ -35,7 +36,11 @@ class PasswordConfirmationMixin(BaseModel):
     @model_validator(mode="after")
     def passwords_match(self) -> Self:
         if self.new_password != self.confirm_password:
-            raise ValueError("Passwords do not match")
+            raise PydanticCustomError(
+                "passwords_do_not_match",
+                "Passwords do not match",
+                {"field": "confirm_password"},
+            )
         return self
 
 
@@ -49,5 +54,9 @@ class UpdatePasswordRequest(PasswordConfirmationMixin):
     @model_validator(mode="after")
     def new_password_differs_from_old(self) -> Self:
         if self.new_password == self.old_password:
-            raise ValueError("New password must be different from the old password")
+            raise PydanticCustomError(
+                "new_password_same_as_old",
+                "New password must be different from the old password",
+                {"field": "new_password"},
+            )
         return self
