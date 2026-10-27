@@ -15,7 +15,7 @@ async def test__update_password__ok(client: AsyncClient, db_session: AsyncSessio
 
     client.cookies.set(settings.SESSION_COOKIE_NAME, token)
     response = await client.post(
-        "/auth/update-password",
+        "/v1/auth/update-password",
         json={
             "old_password": "OldPass123",
             "new_password": "NewPass123",

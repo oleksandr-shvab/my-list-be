@@ -11,10 +11,12 @@ PROBLEM_JSON = "application/problem+json"
 async def test__login_with_wrong_password__problem_details_and_request_id(
     client: AsyncClient,
 ) -> None:
-    await client.post("/auth/register", json={"email": "a@example.com", "password": "password-one"})
+    await client.post(
+        "/v1/auth/register", json={"email": "a@example.com", "password": "password-one"}
+    )
 
     response = await client.post(
-        "/auth/login",
+        "/v1/auth/login",
         json={"email": "a@example.com", "password": "wrong-password"},
         headers={"X-Request-ID": "trace-123"},
     )
@@ -31,7 +33,7 @@ async def test__validation_error__codes_without_echoing_input(client: AsyncClien
     secret = "xQ9!z"
 
     response = await client.post(
-        "/auth/register", json={"email": "a@example.com", "password": secret}
+        "/v1/auth/register", json={"email": "a@example.com", "password": secret}
     )
 
     assert response.status_code == 422
@@ -50,13 +52,16 @@ async def test__unhandled_exception__json_500_with_request_id() -> None:
     async def boom() -> None:
         raise RuntimeError("secret internal detail")
 
+    routes_before = list(app.router.routes)
     app.include_router(probe)
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             response = await ac.get("/boom")
     finally:
-        app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", "") != "/boom"]
+        # include_router adds a nested router object, so restore the whole list.
+        app.router.routes[:] = routes_before
+        app.openapi_schema = None
 
     assert response.status_code == 500
     body = response.json()

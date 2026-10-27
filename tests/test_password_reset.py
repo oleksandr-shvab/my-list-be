@@ -21,7 +21,7 @@ GENERIC_FORGOT_PASSWORD_DETAIL = "If an account with that email exists, a reset 
 async def test__forgot_password__ok(client: AsyncClient, db_session: AsyncSession) -> None:
     user = await create_user(db_session, email="existing@example.com", password="OldPass123")
 
-    response = await client.post("/auth/forgot-password", json={"email": user.email})
+    response = await client.post("/v1/auth/forgot-password", json={"email": user.email})
 
     assert response.status_code == 202
     assert response.json() == {"detail": GENERIC_FORGOT_PASSWORD_DETAIL}
@@ -34,7 +34,7 @@ async def test__reset_password__ok(client: AsyncClient, db_session: AsyncSession
     token = await create_password_reset_token(user.id)
 
     response = await client.post(
-        "/auth/reset-password",
+        "/v1/auth/reset-password",
         json={"token": token, "new_password": "NewPass123", "confirm_password": "NewPass123"},
     )
 

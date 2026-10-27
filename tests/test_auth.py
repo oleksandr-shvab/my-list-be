@@ -9,7 +9,7 @@ CREDENTIALS = {"email": "player@example.com", "password": "correct horse battery
 
 
 async def test__register__ok(client: AsyncClient) -> None:
-    response = await client.post("/auth/register", json=CREDENTIALS)
+    response = await client.post("/v1/auth/register", json=CREDENTIALS)
 
     assert response.status_code == 201
     body = response.json()
@@ -20,9 +20,9 @@ async def test__register__ok(client: AsyncClient) -> None:
 
 
 async def test__login__ok(client: AsyncClient) -> None:
-    await client.post("/auth/register", json=CREDENTIALS)
+    await client.post("/v1/auth/register", json=CREDENTIALS)
 
-    response = await client.post("/auth/login", json=CREDENTIALS)
+    response = await client.post("/v1/auth/login", json=CREDENTIALS)
 
     assert response.status_code == 200
     assert response.json()["email"] == CREDENTIALS["email"]
@@ -30,18 +30,18 @@ async def test__login__ok(client: AsyncClient) -> None:
 
 
 async def test__logout__ok(client: AsyncClient) -> None:
-    await client.post("/auth/register", json=CREDENTIALS)
+    await client.post("/v1/auth/register", json=CREDENTIALS)
 
-    response = await client.post("/auth/logout")
+    response = await client.post("/v1/auth/logout")
 
     assert response.status_code == 204
-    assert (await client.get("/auth/me")).status_code == 401
+    assert (await client.get("/v1/auth/me")).status_code == 401
 
 
 async def test__me__ok(client: AsyncClient) -> None:
-    await client.post("/auth/register", json=CREDENTIALS)
+    await client.post("/v1/auth/register", json=CREDENTIALS)
 
-    response = await client.get("/auth/me")
+    response = await client.get("/v1/auth/me")
 
     assert response.status_code == 200
     assert response.json()["email"] == CREDENTIALS["email"]
