@@ -7,6 +7,16 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.core.config import settings
+
+# Point the whole app at the test services before any module opens a connection, and refuse to
+# run if they are the same as the dev ones (the suite drops tables and flushes Redis).
+assert settings.TEST_DATABASE_URL != settings.DATABASE_URL, (
+    "TEST_DATABASE_URL must differ from DATABASE_URL"
+)
+assert settings.TEST_REDIS_URL != settings.REDIS_URL, "TEST_REDIS_URL must differ from REDIS_URL"
+settings.DATABASE_URL = settings.TEST_DATABASE_URL
+settings.REDIS_URL = settings.TEST_REDIS_URL
+
 from app.core.db import Base, get_db
 from app.core.redis import redis_client
 from app.main import app
@@ -74,9 +84,5 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 @pytest.fixture(autouse=True)
 async def clean_redis() -> AsyncGenerator[None, None]:
     yield
-    async for key in redis_client.scan_iter(match="password_reset*"):
-        await redis_client.delete(key)
-    async for key in redis_client.scan_iter(match="session:*"):
-        await redis_client.delete(key)
-    async for key in redis_client.scan_iter(match="sessions_user:*"):
-        await redis_client.delete(key)
+    # Safe: the client points at TEST_REDIS_URL, a database the dev server does not use.
+    await redis_client.flushdb()

@@ -10,6 +10,8 @@ Dependency management runs on pip + `.venv`, with dependencies pinned in `requir
 
 `redis` is now installed and used for auth session storage (`app/core/redis.py`). `arq` and an S3/MinIO client are still named in the Stack below but **not yet installed** — they're needed for background jobs and image storage, both tied to the `items` domain, so add them when that work resumes rather than now.
 
+Errors, health and config (2026-10-27): every error body follows the contract in `../CONTRACTS.md` ("Errors"): raise an `AppException` subclass with a `code` (`app/core/exceptions.py`), never an English-only `detail`; handlers live in `app/core/errors.py` and every response carries `X-Request-ID`. `GET /healthz` and `GET /readyz` exist (`app/api/health.py`). `ENVIRONMENT` is `local`, `test`, `staging` or `production`; the last two refuse to start on a placeholder `SECRET_KEY`, a non-https `FRONTEND_URL` or localhost CORS origins (`app/core/config.py`). Passwords use argon2id (`app/core/security.py`, async wrappers). The test suite points the app at `TEST_DATABASE_URL` and `TEST_REDIS_URL` (it drops tables and flushes that Redis database, so both must differ from the dev ones). CI is `.github/workflows/ci.yml` (lint, test, migrations).
+
 ## Commands
 
 Set up the venv (Python 3.12 — the system default may be newer; if `python3.12 -m venv` fails with an `ensurepip` error, the `python3.12-venv` system package isn't installed, or bootstrap pip manually with `get-pip.py`):

@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import hash_password, verify_password
+from app.core.security import hash_password, verify_against_dummy_hash, verify_password
 from app.models.user import User
 
 
@@ -17,7 +17,7 @@ async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
 
 
 async def create_user(db: AsyncSession, email: str, password: str) -> User:
-    user = User(email=email, hashed_password=hash_password(password))
+    user = User(email=email, hashed_password=await hash_password(password))
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -26,13 +26,16 @@ async def create_user(db: AsyncSession, email: str, password: str) -> User:
 
 async def authenticate_user(db: AsyncSession, email: str, password: str) -> User | None:
     user = await get_user_by_email(db, email)
-    if user is None or not verify_password(password, user.hashed_password):
+    if user is None:
+        await verify_against_dummy_hash(password)
+        return None
+    if not await verify_password(password, user.hashed_password):
         return None
     return user
 
 
 async def update_user_password(db: AsyncSession, user: User, password: str) -> User:
-    user.hashed_password = hash_password(password)
+    user.hashed_password = await hash_password(password)
     await db.commit()
     await db.refresh(user)
     return user
