@@ -4,12 +4,39 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.exceptions import AppException
 from app.core.request_id import REQUEST_ID_HEADER, new_request_id
 
 logger = logging.getLogger(__name__)
+
+
+class FieldError(BaseModel):
+    field: str = Field(description="Request field name; empty if the error is not about one field")
+    code: str = Field(description="Stable code, translated by the frontend")
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProblemDetails(BaseModel):
+    """The body of every error response (RFC 9457 plus extension members), see CONTRACTS.md."""
+
+    type: str = "about:blank"
+    status: int
+    title: str = Field(description="English, for developers and logs only")
+    code: str = Field(description="Stable code, translated by the frontend")
+    params: dict[str, Any] = Field(default_factory=dict)
+    request_id: str
+    errors: list[FieldError] = Field(default_factory=list)
+
+
+# Documented on every route (OpenAPI). 422 replaces FastAPI's default validation schema, which
+# this API does not return.
+ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    422: {"model": ProblemDetails, "description": "Validation error"},
+    500: {"model": ProblemDetails, "description": "Unexpected error"},
+}
 
 HTTP_STATUS_CODES = {
     400: "bad_request",

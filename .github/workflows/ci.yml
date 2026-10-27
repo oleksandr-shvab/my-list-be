@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    # labeled and unlabeled: adding the breaking-change label re-runs the openapi job.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -96,3 +98,38 @@ jobs:
           test "$heads" -eq 1
       - name: Models and migrations agree
         run: uv run --no-dev alembic check
+
+  # The OpenAPI snapshot is the contract the frontend generates its types from (../CONTRACTS.md).
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked --no-dev
+      - name: Snapshot is current
+        run: uv run --no-dev python scripts/export_openapi.py --check
+      - name: Get the snapshot on main
+        id: base
+        if: github.event_name == 'pull_request'
+        run: |
+          if git cat-file -e origin/main:openapi/openapi.json 2>/dev/null; then
+            git show origin/main:openapi/openapi.json > "$RUNNER_TEMP/base-openapi.json"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+      # A deliberate breaking change needs the "breaking-change" label on the pull request, and the
+      # matching frontend change must be merged with it.
+      - name: No breaking changes against main
+        if: steps.base.outputs.exists == 'true' && !contains(github.event.pull_request.labels.*.name, 'breaking-change')
+        uses: oasdiff/oasdiff-action/breaking@9ce3a29eb0e6478dd0140932a678c7fb59d08f22 # v0.1.20
+        with:
+          base: ${{ runner.temp }}/base-openapi.json
+          revision: openapi/openapi.json
+          fail-on: ERR
+          # Do not upload the specs to oasdiff.com.
+          review: "false"

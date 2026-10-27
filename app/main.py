@@ -9,8 +9,9 @@ from app.api.health import router as health_router
 from app.api.main import api_router
 from app.core.config import settings
 from app.core.db import engine
-from app.core.errors import register_error_handlers
+from app.core.errors import ERROR_RESPONSES, register_error_handlers
 from app.core.logging import configure_logging
+from app.core.openapi import operation_id
 from app.core.redis import redis_client
 from app.core.request_id import RequestIdMiddleware
 
@@ -27,6 +28,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     lifespan=lifespan,
+    generate_unique_id_function=operation_id,
+    responses=ERROR_RESPONSES,
     # Interactive docs only outside staging and production; /openapi.json stays for the Orval flow.
     docs_url=None if settings.is_deployed else "/docs",
     redoc_url=None if settings.is_deployed else "/redoc",
@@ -47,5 +50,6 @@ if settings.BACKEND_CORS_ORIGINS:
     )
 app.add_middleware(RequestIdMiddleware)
 
+# Health checks are infrastructure, not part of the versioned API.
 app.include_router(health_router)
-app.include_router(api_router)
+app.include_router(api_router, prefix="/v1")
