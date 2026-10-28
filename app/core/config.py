@@ -14,7 +14,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
     # Used only by the test suite (tests/conftest.py); never set in staging or production.
-    TEST_DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5433/item_list_test"
+    TEST_DATABASE_URL: str = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5433/daily_game_challenge_test"
+    )
     REDIS_URL: str = "redis://localhost:6379/0"
     # Used only by the test suite. A different database from REDIS_URL, so a test run never
     # touches the sessions of a running dev server.

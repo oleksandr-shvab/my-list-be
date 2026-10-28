@@ -19,8 +19,8 @@ env:
   UV_VERSION: "0.13.6"
   # Settings the app reads. These are throwaway values for CI services, not real secrets.
   ENVIRONMENT: test
-  DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/item_list
-  TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/item_list_test
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/daily_game_challenge
+  TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/daily_game_challenge_test
   REDIS_URL: redis://localhost:6379/0
   TEST_REDIS_URL: redis://localhost:6379/1
   SECRET_KEY: ci-only-secret-key-not-used-anywhere-0000
@@ -47,7 +47,7 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: item_list
+          POSTGRES_DB: daily_game_challenge
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s
@@ -76,7 +76,7 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: item_list
+          POSTGRES_DB: daily_game_challenge
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s
