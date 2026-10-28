@@ -1,5 +1,5 @@
 [project]
-name = "my-list-be"
+name = "daily-game-challenge-be"
 version = "0.1.0"
 description = "Daily Game Challenge backend (FastAPI)"
 requires-python = ">=3.12,<3.13"

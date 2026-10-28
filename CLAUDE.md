@@ -39,7 +39,11 @@ uv run alembic upgrade head                    # apply migrations
 
 Commit `uv.lock` with every dependency change; CI runs `uv sync --locked` and fails when the lock is stale.
 
-Copy `.env.example` to `.env` and adjust values before running anything that touches the DB (`DATABASE_URL` points at Postgres; no docker-compose exists yet, so a local/external Postgres instance is assumed).
+Copy `.env.example` to `.env` and adjust values before running anything that touches the DB (`DATABASE_URL` points at Postgres).
+
+`docker compose up -d` starts Postgres 16 (host port 5433, database `daily_game_challenge`) and Redis 7 (port 6379).
+
+Old local database: the database used to be called `item_list`. A volume `my-list-be_db_data` created before the rename still holds only that old database, because the Postgres image applies `POSTGRES_DB` only to an empty data folder. Local data is test data and is not migrated. To start clean: `docker compose down`, `docker volume rm my-list-be_db_data`, `docker compose up -d`, `uv run alembic upgrade head`. Then copy the new `DATABASE_URL` and `TEST_DATABASE_URL` from `.env.example` into your `.env`. The test suite creates the test database itself.
 
 ## What this is
 A FastAPI backend for a flexible item/list tracker: users create lists of "things they want" — a shopping list with prices, a personal collection without prices, etc. Each item belongs to a category, has tags and images, plus a set of fields that vary by category (price, size, condition, description, ...).
