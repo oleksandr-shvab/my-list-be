@@ -4,7 +4,7 @@
 
 A logged-in user can currently only change their password via the "forgot password" email-token flow. There's no way for an already-authenticated user to change their password directly from a profile page. This spec adds that: `old_password` + `new_password` + `confirm_password`, verified against the current session.
 
-This is backend-only. Frontend (profile page, form) lives in `item-list-frontend` and is out of scope here, but the request/response contract below is what that repo will integrate against — update `../CONTRACTS.md` once this ships.
+This is backend-only. Frontend (profile page, form) lives in `my-list-fe` and is out of scope here, but the request/response contract below is what that repo will integrate against — update `../CONTRACTS.md` once this ships.
 
 ## User flow
 

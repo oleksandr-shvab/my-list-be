@@ -94,9 +94,6 @@ just at 1.
   Never construct an ad-hoc session inside a service.
 - No blocking calls inside `async def` code paths (sync HTTP clients, sync
   boto3 calls, etc.) — async all the way through, per `CLAUDE.md` Conventions.
-- `custom_attributes` validation against a category's `field_schema` is
-  dynamic (Pydantic `create_model`), not a hardcoded model per category —
-  see the `dynamic-category-schema` skill.
 
 ## Style
 
