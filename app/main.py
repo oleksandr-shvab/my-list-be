@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
+    title="Daily Game Challenge API",
     lifespan=lifespan,
     generate_unique_id_function=operation_id,
     responses=ERROR_RESPONSES,
