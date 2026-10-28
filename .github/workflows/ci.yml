@@ -119,16 +119,18 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           if git cat-file -e origin/main:openapi/openapi.json 2>/dev/null; then
-            git show origin/main:openapi/openapi.json > "$RUNNER_TEMP/base-openapi.json"
+            git show origin/main:openapi/openapi.json > "$GITHUB_WORKSPACE/base-openapi.json"
             echo "exists=true" >> "$GITHUB_OUTPUT"
           fi
+      # The action runs in a container that sees only the workspace, so the base file lives there
+      # (the runner's temp folder is not visible to it).
       # A deliberate breaking change needs the "breaking-change" label on the pull request, and the
       # matching frontend change must be merged with it.
       - name: No breaking changes against main
         if: steps.base.outputs.exists == 'true' && !contains(github.event.pull_request.labels.*.name, 'breaking-change')
         uses: oasdiff/oasdiff-action/breaking@9ce3a29eb0e6478dd0140932a678c7fb59d08f22 # v0.1.20
         with:
-          base: ${{ runner.temp }}/base-openapi.json
+          base: base-openapi.json
           revision: openapi/openapi.json
           fail-on: ERR
           # Do not upload the specs to oasdiff.com.
