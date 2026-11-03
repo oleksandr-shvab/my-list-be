@@ -50,3 +50,15 @@ class ServiceUnavailableError(AppException):
     status_code = 503
     code = "service_unavailable"
     detail = "Service unavailable"
+
+
+class CsrfOriginMismatchError(AppException):
+    status_code = 403
+    code = "csrf_origin_mismatch"
+    detail = "Request origin is not allowed"
+
+
+class UnsupportedMediaTypeError(AppException):
+    status_code = 415
+    code = "unsupported_media_type"
+    detail = "Request body must be application/json"

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
 from app.api.main import api_router
 from app.core.config import settings
+from app.core.csrf import CsrfOriginMiddleware
 from app.core.db import engine
 from app.core.errors import ERROR_RESPONSES, register_error_handlers
 from app.core.logging import configure_logging
@@ -37,6 +38,10 @@ app = FastAPI(
 )
 
 register_error_handlers(app)
+
+# Added first, so it is the innermost middleware: its 403 and 415 still get X-Request-ID, and it
+# runs before routing, dependencies and body parsing.
+app.add_middleware(CsrfOriginMiddleware)
 
 # Production is same-origin (the proxy serves the SPA and the API on one origin), so CORS is
 # only for local development, where Vite runs on another port.

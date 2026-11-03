@@ -6,7 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
-from app.core.config import settings
+from app.core.config import serialize_origin, settings
 
 # Point the whole app at the test services before any module opens a connection, and refuse to
 # run if they are the same as the dev ones (the suite drops tables and flushes Redis).
@@ -20,6 +20,10 @@ settings.REDIS_URL = settings.TEST_REDIS_URL
 from app.core.db import Base, get_db
 from app.core.redis import redis_client
 from app.main import app
+
+# An allowed origin (FRONTEND_URL's), sent by the `client` fixture on every request.
+TEST_ORIGIN = serialize_origin(settings.FRONTEND_URL)
+assert TEST_ORIGIN is not None
 
 
 def _maintenance_url_and_db_name(database_url: str) -> tuple[str, str]:
@@ -76,7 +80,9 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers={"Origin": TEST_ORIGIN}
+    ) as ac:
         yield ac
     app.dependency_overrides.clear()
 
