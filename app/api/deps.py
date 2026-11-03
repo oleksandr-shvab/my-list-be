@@ -13,17 +13,28 @@ from app.models.user import User
 SessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
-async def get_current_user(
+async def get_optional_user(
     db: SessionDep,
     session_id: Annotated[str | None, Cookie(alias=settings.SESSION_COOKIE_NAME)] = None,
-) -> User:
+) -> User | None:
+    """The signed-in user, or None for a guest. A missing, unknown or expired cookie and an
+    inactive user all mean a guest, never 401 (AC-42, AC-81)."""
     if session_id is None:
-        raise NotAuthenticatedError()
+        return None
     user_id = await get_session(session_id)
     if user_id is None:
-        raise NotAuthenticatedError()
+        return None
     user = await get_user_by_id(db, user_id)
     if user is None or not user.is_active:
+        return None
+    return user
+
+
+OptionalUser = Annotated[User | None, Depends(get_optional_user)]
+
+
+async def get_current_user(user: OptionalUser) -> User:
+    if user is None:
         raise NotAuthenticatedError()
     return user
 

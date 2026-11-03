@@ -2,6 +2,7 @@ import datetime as dt
 
 from sqlalchemy import ColumnElement, and_, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.game import Game
 from app.models.puzzle import Puzzle, PuzzleStatus
@@ -34,15 +35,18 @@ def visible_puzzle_condition(today: dt.date) -> ColumnElement[bool]:
     )
 
 
-async def get_visible_puzzle(
+async def get_visible_puzzle_with_details(
     db: AsyncSession, *, game_id: int, variant: str, puzzle_date: dt.date, today: dt.date
 ) -> Puzzle | None:
+    """The visible puzzle with its answer title and its clues (in step order), in one query."""
     result = await db.execute(
-        select(Puzzle).where(
+        select(Puzzle)
+        .where(
             Puzzle.game_id == game_id,
             Puzzle.variant == variant,
             Puzzle.date == puzzle_date,
             visible_puzzle_condition(today),
         )
+        .options(joinedload(Puzzle.answer_title), joinedload(Puzzle.clues))
     )
-    return result.scalar_one_or_none()
+    return result.unique().scalar_one_or_none()

@@ -14,9 +14,10 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, enum_check
+from app.models.title import Title
 
 
 class PuzzleStatus(StrEnum):
@@ -65,6 +66,13 @@ class Puzzle(Base):
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    # `lazy="raise"`: AsyncSession cannot lazy-load, so a query that needs these loads them with
+    # `joinedload` (see `get_visible_puzzle_with_details`) and any other access fails loudly.
+    answer_title: Mapped[Title] = relationship(lazy="raise")
+    clues: Mapped[list["PuzzleClue"]] = relationship(
+        order_by="PuzzleClue.step", lazy="raise", viewonly=True
     )
 
 
