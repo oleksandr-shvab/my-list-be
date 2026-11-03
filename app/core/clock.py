@@ -19,4 +19,10 @@ def utc_today(now: dt.datetime) -> dt.date:
     return now.astimezone(dt.UTC).date()
 
 
+def next_utc_midnight(now: dt.datetime) -> dt.datetime:
+    """The next 00:00 UTC strictly after `now`: at exactly 00:00:00 it is the following day."""
+    start_of_today = dt.datetime.combine(utc_today(now), dt.time.min, tzinfo=dt.UTC)
+    return start_of_today + dt.timedelta(days=1)
+
+
 NowDep = Annotated[dt.datetime, Depends(get_now)]

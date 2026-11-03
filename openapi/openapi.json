@@ -1,6 +1,33 @@
 {
   "components": {
     "schemas": {
+      "ClockRead": {
+        "description": "The server's clock. The client may use it only for display (AC-69).",
+        "properties": {
+          "next_reset": {
+            "format": "date-time",
+            "title": "Next Reset",
+            "type": "string"
+          },
+          "now": {
+            "format": "date-time",
+            "title": "Now",
+            "type": "string"
+          },
+          "today": {
+            "format": "date",
+            "title": "Today",
+            "type": "string"
+          }
+        },
+        "required": [
+          "now",
+          "today",
+          "next_reset"
+        ],
+        "title": "ClockRead",
+        "type": "object"
+      },
       "FieldError": {
         "properties": {
           "code": {
@@ -684,6 +711,48 @@
         "summary": "Update Password",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/v1/clock": {
+      "get": {
+        "description": "No database and no session: only the clock dependency (AC-67).",
+        "operationId": "clock_get_clock",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          }
+        },
+        "summary": "Get Clock",
+        "tags": [
+          "clock"
         ]
       }
     }
