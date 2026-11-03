@@ -5,7 +5,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.crud.puzzle import get_visible_puzzle, visible_puzzle_condition
+from app.crud.puzzle import get_visible_puzzle_with_details, visible_puzzle_condition
 from app.models.game import Game
 from app.models.puzzle import Puzzle, PuzzleStatus
 from app.models.title import Title
@@ -53,7 +53,7 @@ async def test__visible_puzzle__only_when_scheduled_started_and_enabled(
         db_session, game=game, answer=answer, puzzle_date=puzzle_date, status=status
     )
 
-    found = await get_visible_puzzle(
+    found = await get_visible_puzzle_with_details(
         db_session,
         game_id=game.id,
         variant=game.default_variant,

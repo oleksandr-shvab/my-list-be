@@ -62,3 +62,37 @@ class UnsupportedMediaTypeError(AppException):
     status_code = 415
     code = "unsupported_media_type"
     detail = "Request body must be application/json"
+
+
+class GameNotFoundError(AppException):
+    status_code = 404
+    code = "game_not_found"
+    detail = "Game not found"
+
+
+class VariantNotFoundError(AppException):
+    status_code = 404
+    code = "variant_not_found"
+    detail = "Variant not found"
+
+
+class PuzzleNotFoundError(AppException):
+    """Raised for every puzzle that is missing or not visible (draft, not scheduled, future date,
+    before launch), always with this one detail, so the bodies are identical (AC-17)."""
+
+    status_code = 404
+    code = "puzzle_not_found"
+    detail = "Puzzle not found"
+
+
+class PuzzleDataError(AppException):
+    """A scheduled puzzle that breaks a rule of its game (for example a missing step). Not a
+    client error: it is a 500 `internal_error`, and the puzzle builder must have caught it before
+    the date. The response says nothing about the cause; `reason` is for the log."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+    def __str__(self) -> str:
+        return self.reason

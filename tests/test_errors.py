@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 
 from app.core import health
+from app.core.errors import field_from_location
 from app.main import app
 
 PROBLEM_JSON = "application/problem+json"
@@ -98,3 +99,27 @@ async def test__readyz__dependency_down__503(
     body = response.json()
     assert body["code"] == "service_unavailable"
     assert body["params"] == {"failed": ["redis"]}
+
+
+@pytest.mark.parametrize(
+    ("location", "field"),
+    [
+        (("body", "email"), "email"),
+        (("path", "date"), "date"),
+        (("query", "limit"), "limit"),
+        (("body", "entries", 3, "date"), "entries.3.date"),
+        # Only the first part names where the value came from; a later part with that name stays.
+        (("body", "query"), "query"),
+        (("body", "filters", "path"), "filters.path"),
+        (("header", "x-request-id"), "x-request-id"),
+        (("cookie", "session_id"), "session_id"),
+        (("body", "cookie"), "cookie"),
+        (("query", "body"), "body"),
+        (("filters", "query"), "filters.query"),
+        ((), ""),
+    ],
+)
+def test__field_from_location__drops_only_the_leading_source(
+    location: tuple[str | int, ...], field: str
+) -> None:
+    assert field_from_location(location) == field

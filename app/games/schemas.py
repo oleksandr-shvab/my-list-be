@@ -1,0 +1,87 @@
+import datetime as dt
+import re
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+from app.games.enums import GuessResult, ProgressStatus
+
+DATE_FORMAT = "YYYY-MM-DD"
+
+
+DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+
+
+def _strict_date(value: Any) -> dt.date:
+    """Only a real `YYYY-MM-DD` day. Pydantic's lax `date` also reads an integer as a Unix
+    timestamp and `date.fromisoformat` accepts `20261102`, so the shape is checked first (R-13)."""
+    if not isinstance(value, str) or not DATE_PATTERN.fullmatch(value):
+        raise ValueError(f"Expected a date as {DATE_FORMAT}")
+    return dt.date.fromisoformat(value)
+
+
+StrictDate = Annotated[dt.date, BeforeValidator(_strict_date)]
+
+
+class GameRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    slug: str
+    default_variant: str
+    launch_date: dt.date
+
+
+class GameList(BaseModel):
+    items: list[GameRead]
+
+
+class HintRead(BaseModel):
+    kind: str
+    value: str
+
+
+class StepRead(BaseModel):
+    step: int
+    hint: HintRead | None
+    source_url: str | None = Field(description="Null until the game ends")
+
+
+class GuessRead(BaseModel):
+    title_id: int | None = Field(description="Null for a skip")
+    name: str | None = Field(description="Null for a skip")
+    result: GuessResult
+
+
+class AnswerRead(BaseModel):
+    title_id: int
+    name: str
+    franchise: str | None
+    year: int | None
+
+
+class GameGuesserView(BaseModel):
+    """The puzzle view of the game guesser. The tag `type` lets later games extend this into a
+    union without breaking the game guesser's clients (AC-3). No internal puzzle or progress id
+    (AC-5)."""
+
+    type: Literal["game_guesser"]
+    slug: str
+    variant: str
+    date: dt.date
+    number: int = Field(description="Days since the game's launch date, plus 1")
+    status: ProgressStatus
+    max_guesses: int
+    guesses_used: int
+    guesses_left: int
+    guesses: list[GuessRead]
+    steps: list[StepRead] = Field(description="Only the steps earned so far, all six at the end")
+    answer: AnswerRead | None = Field(description="Null until the game ends")
+    counts_for_streak: bool | None
+    signed_in: bool = Field(
+        description="False when the request has no valid session, so the caller is a guest"
+    )
+
+
+# What a puzzle route returns. Today it is the game guesser's view; when a second game arrives
+# it becomes a union discriminated on `type` (AC-3), and the routes and the service do not change.
+PuzzleView = GameGuesserView

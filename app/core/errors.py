@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -60,6 +61,7 @@ VALIDATION_CODES = {
     "value_error": "invalid_value",
     "json_invalid": "invalid_json",
 }
+REQUEST_PARTS = ("body", "path", "query", "header", "cookie")
 VALIDATION_PARAMS = {
     "string_too_short": {"min": "min_length"},
     "string_too_long": {"max": "max_length"},
@@ -103,6 +105,15 @@ def problem_response(
     )
 
 
+def field_from_location(location: Sequence[str | int]) -> str:
+    """The request field name of a validation error. The first part of `loc` says where the value
+    came from (`body`, `path`, `query`, `header`, `cookie`); it is dropped, and a later part with the same name stays."""
+    parts = list(location)
+    if parts and parts[0] in REQUEST_PARTS:
+        parts = parts[1:]
+    return ".".join(str(part) for part in parts)
+
+
 def _validation_error_items(exc: RequestValidationError) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for error in exc.errors():
@@ -110,8 +121,7 @@ def _validation_error_items(exc: RequestValidationError) -> list[dict[str, Any]]
         # Errors raised by our own validators carry the form field they belong to.
         field = context.pop("field", None)
         if field is None:
-            location = [str(part) for part in error["loc"] if part != "body"]
-            field = ".".join(location)
+            field = field_from_location(error["loc"])
         error_type = error["type"]
         code = VALIDATION_CODES.get(error_type, error_type)
         params = {
@@ -124,6 +134,15 @@ def _validation_error_items(exc: RequestValidationError) -> list[dict[str, Any]]
 
 
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
+    if exc.status_code == 500:
+        logger.error(
+            "Server error on %s %s (request %s): %s",
+            request.method,
+            request.url.path,
+            _request_id(request),
+            exc,
+            exc_info=exc,
+        )
     return problem_response(request, exc.status_code, exc.code, exc.detail, params=exc.params)
 
 

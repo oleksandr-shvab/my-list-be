@@ -1,6 +1,48 @@
 {
   "components": {
     "schemas": {
+      "AnswerRead": {
+        "properties": {
+          "franchise": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Franchise"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "title_id": {
+            "title": "Title Id",
+            "type": "integer"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "required": [
+          "title_id",
+          "name",
+          "franchise",
+          "year"
+        ],
+        "title": "AnswerRead",
+        "type": "object"
+      },
       "ClockRead": {
         "description": "The server's clock. The client may use it only for display (AC-69).",
         "properties": {
@@ -67,6 +109,215 @@
         "title": "ForgotPasswordRequest",
         "type": "object"
       },
+      "GameGuesserView": {
+        "description": "The puzzle view of the game guesser. The tag `type` lets later games extend this into a\nunion without breaking the game guesser's clients (AC-3). No internal puzzle or progress id\n(AC-5).",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerRead"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until the game ends"
+          },
+          "counts_for_streak": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts For Streak"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "guesses": {
+            "items": {
+              "$ref": "#/components/schemas/GuessRead"
+            },
+            "title": "Guesses",
+            "type": "array"
+          },
+          "guesses_left": {
+            "title": "Guesses Left",
+            "type": "integer"
+          },
+          "guesses_used": {
+            "title": "Guesses Used",
+            "type": "integer"
+          },
+          "max_guesses": {
+            "title": "Max Guesses",
+            "type": "integer"
+          },
+          "number": {
+            "description": "Days since the game's launch date, plus 1",
+            "title": "Number",
+            "type": "integer"
+          },
+          "signed_in": {
+            "description": "False when the request has no valid session, so the caller is a guest",
+            "title": "Signed In",
+            "type": "boolean"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProgressStatus"
+          },
+          "steps": {
+            "description": "Only the steps earned so far, all six at the end",
+            "items": {
+              "$ref": "#/components/schemas/StepRead"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "type": {
+            "const": "game_guesser",
+            "title": "Type",
+            "type": "string"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "slug",
+          "variant",
+          "date",
+          "number",
+          "status",
+          "max_guesses",
+          "guesses_used",
+          "guesses_left",
+          "guesses",
+          "steps",
+          "answer",
+          "counts_for_streak",
+          "signed_in"
+        ],
+        "title": "GameGuesserView",
+        "type": "object"
+      },
+      "GameList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GameRead"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "GameList",
+        "type": "object"
+      },
+      "GameRead": {
+        "properties": {
+          "default_variant": {
+            "title": "Default Variant",
+            "type": "string"
+          },
+          "launch_date": {
+            "format": "date",
+            "title": "Launch Date",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "default_variant",
+          "launch_date"
+        ],
+        "title": "GameRead",
+        "type": "object"
+      },
+      "GuessRead": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a skip",
+            "title": "Name"
+          },
+          "result": {
+            "$ref": "#/components/schemas/GuessResult"
+          },
+          "title_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a skip",
+            "title": "Title Id"
+          }
+        },
+        "required": [
+          "title_id",
+          "name",
+          "result"
+        ],
+        "title": "GuessRead",
+        "type": "object"
+      },
+      "GuessResult": {
+        "enum": [
+          "correct",
+          "wrong",
+          "franchise",
+          "skipped"
+        ],
+        "title": "GuessResult",
+        "type": "string"
+      },
+      "HintRead": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "HintRead",
+        "type": "object"
+      },
       "ProblemDetails": {
         "description": "The body of every error response (RFC 9457 plus extension members), see CONTRACTS.md.",
         "properties": {
@@ -115,6 +366,15 @@
         "title": "ProblemDetails",
         "type": "object"
       },
+      "ProgressStatus": {
+        "enum": [
+          "in_progress",
+          "won",
+          "lost"
+        ],
+        "title": "ProgressStatus",
+        "type": "string"
+      },
       "ResetPasswordRequest": {
         "properties": {
           "confirm_password": {
@@ -140,6 +400,43 @@
           "token"
         ],
         "title": "ResetPasswordRequest",
+        "type": "object"
+      },
+      "StepRead": {
+        "properties": {
+          "hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HintRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until the game ends",
+            "title": "Source Url"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "step",
+          "hint",
+          "source_url"
+        ],
+        "title": "StepRead",
         "type": "object"
       },
       "UpdatePasswordRequest": {
@@ -753,6 +1050,255 @@
         "summary": "Get Clock",
         "tags": [
           "clock"
+        ]
+      }
+    },
+    "/v1/games": {
+      "get": {
+        "operationId": "games_list_games",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GameList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          }
+        },
+        "summary": "List Games",
+        "tags": [
+          "games"
+        ]
+      }
+    },
+    "/v1/games/{slug}/puzzles/today": {
+      "get": {
+        "operationId": "games_get_today_puzzle",
+        "parameters": [
+          {
+            "description": "The game's slug, for example `game-guesser`",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "description": "The game's slug, for example `game-guesser`",
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to the game's default variant",
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the game's default variant",
+              "title": "Variant"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GameGuesserView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Game, variant or puzzle not found (or the puzzle is not visible yet)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          }
+        },
+        "summary": "Get Today Puzzle",
+        "tags": [
+          "games"
+        ]
+      }
+    },
+    "/v1/games/{slug}/puzzles/{date}": {
+      "get": {
+        "operationId": "games_get_puzzle",
+        "parameters": [
+          {
+            "description": "The game's slug, for example `game-guesser`",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "description": "The game's slug, for example `game-guesser`",
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A day as YYYY-MM-DD",
+            "in": "path",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "description": "A day as YYYY-MM-DD",
+              "format": "date",
+              "title": "Date",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to the game's default variant",
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the game's default variant",
+              "title": "Variant"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GameGuesserView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Game, variant or puzzle not found (or the puzzle is not visible yet)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          }
+        },
+        "summary": "Get Puzzle",
+        "tags": [
+          "games"
         ]
       }
     }
