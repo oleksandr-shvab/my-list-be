@@ -7,7 +7,7 @@ description: Service/repository-layer architecture rules and style conventions f
 
 Adapted from a Django "thin views, thick models" (Two Scoops of Django)
 review checklist to this repo's layering: `router.py` → `service.py` →
-`repository.py` → `models.py` (per `CLAUDE.md` Architecture, currently
+`app/crud/<entity>.py` → `models.py` (per `CLAUDE.md` Architecture, currently
 implemented in `app/auth/`).
 
 ## Thin routers, thick services
@@ -25,7 +25,7 @@ implemented in `app/auth/`).
 
 - Routers and services never build a raw `select()` statement or call
   `session.execute()`/`session.scalars()` directly — that belongs in the
-  repository layer (`app/<domain>/repository.py`). Services orchestrate and
+  repository layer (`app/crud/<entity>.py`). Services orchestrate and
   apply business rules; repositories are the only place that talks to the DB
   in query form. (Django analogue: using `filter()`/`order_by()` directly
   instead of a QuerySet method is an anti-pattern.)

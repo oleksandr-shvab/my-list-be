@@ -39,7 +39,9 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint("id"),
+        # Pinned: Postgres's own name, which this migration always created before the naming
+        # convention existed. `dece8484277f` renames it to `pk_users`.
+        sa.PrimaryKeyConstraint("id", name="users_pkey"),
     )
     op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
     # ### end Alembic commands ###
