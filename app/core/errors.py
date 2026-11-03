@@ -46,6 +46,7 @@ HTTP_STATUS_CODES = {
     405: "method_not_allowed",
     409: "conflict",
     413: "payload_too_large",
+    415: "unsupported_media_type",
     429: "too_many_requests",
     503: "service_unavailable",
 }
@@ -89,7 +90,11 @@ def problem_response(
         "request_id": request_id,
         "errors": errors or [],
     }
-    response_headers = {REQUEST_ID_HEADER: request_id, **(headers or {})}
+    response_headers = {
+        REQUEST_ID_HEADER: request_id,
+        "Cache-Control": "no-store",
+        **(headers or {}),
+    }
     return JSONResponse(
         status_code=status_code,
         content=body,
