@@ -1,20 +1,40 @@
 import datetime as dt
 import logging
+from dataclasses import replace
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import utc_today
-from app.core.exceptions import GameNotFoundError, PuzzleNotFoundError, VariantNotFoundError
+from app.core.exceptions import (
+    DuplicateGuessError,
+    GameNotFoundError,
+    InvalidGuessHistoryError,
+    PuzzleAlreadyFinishedError,
+    PuzzleNotFoundError,
+    TitleNotFoundError,
+    VariantNotFoundError,
+)
 from app.crud.game import get_enabled_game_by_slug, list_enabled_games
 from app.crud.puzzle import get_visible_puzzle_with_details
+from app.crud.title import get_titles_by_ids
 from app.crud.title import search_titles as search_titles_in_db
+from app.games.enums import ProgressStatus
 from app.games.modules import MODULES
-from app.games.modules.base import ClueData, GameModule, ProgressState, PuzzleData, TitleData
+from app.games.modules.base import (
+    ClueData,
+    GameModule,
+    GuessError,
+    ProgressState,
+    PuzzleData,
+    TitleAlreadyGuessedError,
+    TitleData,
+    TitleKindMismatchError,
+)
 from app.games.normalize import normalize_text
 from app.games.schemas import GameList, GameRead, PuzzleView, TitleList, TitleRead
 from app.models.game import Game
 from app.models.puzzle import PuzzleClue
-from app.models.title import Title
+from app.models.title import Title, TitleKind
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -39,6 +59,77 @@ async def get_puzzle_view(
 ) -> PuzzleView:
     """The view of one puzzle for a request with no stored progress. The checks run in the order
     game, variant, puzzle, so a hidden puzzle never shows more than `puzzle_not_found` (AC-17)."""
+    module, puzzle = await _load_puzzle(
+        db, slug=slug, variant=variant, puzzle_date=puzzle_date, now=now
+    )
+    return module.get_puzzle(puzzle, ProgressState(), is_signed_in=user is not None)
+
+
+async def submit_guess(
+    db: AsyncSession,
+    *,
+    slug: str,
+    variant: str | None,
+    puzzle_date: dt.date,
+    now: dt.datetime,
+    user: User | None,
+    title_id: int | None,
+    previous: list[int | None],
+) -> PuzzleView:
+    """Guess on a puzzle, with the earlier guesses sent by the client. Nothing is stored (AC-37):
+    the state is rebuilt by replaying `previous` through the module's own `submit_guess`, then the
+    new guess is applied. The checks run in the order game, variant, puzzle, history, finished,
+    title, then the duplicate rule of the module."""
+    module, puzzle = await _load_puzzle(
+        db, slug=slug, variant=variant, puzzle_date=puzzle_date, now=now
+    )
+    # More earlier guesses than the game has guesses before the last one cannot be a real game
+    # (AC-39). Checked first, so a long list is never replayed.
+    if len(previous) >= module.max_guesses:
+        raise InvalidGuessHistoryError()
+
+    ids = [entry for entry in (*previous, title_id) if entry is not None]
+    found = await get_titles_by_ids(db, ids=ids, kind=TitleKind(puzzle.title_kind))
+    titles = {title_id: _title_data(title) for title_id, title in found.items()}
+    state = ProgressState()
+    for earlier_id in previous:
+        earlier = None if earlier_id is None else titles.get(earlier_id)
+        if earlier is None and earlier_id is not None:
+            raise InvalidGuessHistoryError()
+        try:
+            state, _ = module.submit_guess(puzzle, state, earlier)
+        except GuessError as error:
+            # A duplicate or an entry after the end: a real client never sends it (AC-39).
+            raise InvalidGuessHistoryError() from error
+
+    if state.status != ProgressStatus.IN_PROGRESS:
+        raise PuzzleAlreadyFinishedError()
+    guess = None if title_id is None else titles.get(title_id)
+    if guess is None and title_id is not None:
+        raise TitleNotFoundError()
+    try:
+        state, _ = module.submit_guess(puzzle, state, guess)
+    except TitleAlreadyGuessedError as error:
+        raise DuplicateGuessError() from error
+    except TitleKindMismatchError as error:
+        # The SQL kind filter in `get_titles_by_ids` normally stops a foreign title first.
+        raise TitleNotFoundError() from error
+
+    # The guest keeps its own copy of the first answer (AC-40), so later requests carry `None`.
+    counts_for_streak = utc_today(now) == puzzle.date if not previous else None
+    state = replace(state, counts_for_streak=counts_for_streak)
+    return module.get_puzzle(puzzle, state, is_signed_in=user is not None)
+
+
+async def _load_puzzle(
+    db: AsyncSession,
+    *,
+    slug: str,
+    variant: str | None,
+    puzzle_date: dt.date,
+    now: dt.datetime,
+) -> tuple[GameModule, PuzzleData]:
+    """The game's module and the visible puzzle as plain data."""
     game, module = await _resolve_game(db, slug)
     variant = variant if variant is not None else game.default_variant
     if not module.has_variant(variant, default_variant=game.default_variant):
@@ -57,13 +148,14 @@ async def get_puzzle_view(
     puzzle_data = PuzzleData(
         slug=game.slug,
         variant=puzzle.variant,
+        title_kind=game.title_kind,
         date=puzzle.date,
         # Days since the launch date, plus 1 (Q16).
         number=(puzzle.date - game.launch_date).days + 1,
         answer=_title_data(puzzle.answer_title),
         clues=tuple(_clue_data(clue) for clue in puzzle.clues),
     )
-    return module.get_puzzle(puzzle_data, ProgressState(), is_signed_in=user is not None)
+    return module, puzzle_data
 
 
 def search_query(query: str) -> str | None:
@@ -104,6 +196,7 @@ async def _resolve_game(db: AsyncSession, slug: str) -> tuple[Game, GameModule]:
 def _title_data(title: Title) -> TitleData:
     return TitleData(
         id=title.id,
+        kind=title.kind,
         name=title.name,
         normalized_name=title.normalized_name,
         franchise=title.franchise,

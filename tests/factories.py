@@ -48,7 +48,7 @@ async def create_puzzle(
     variant: str | None = None,
 ) -> Puzzle:
     """A puzzle with its six clues: steps 1 to 5 are images, step 6 is a video. The hint of
-    step 3 is null, as for a title with no Metacritic score."""
+    step 3 is null, as for a title with no Metacritic score. Every clue has a source link."""
     puzzle = Puzzle(
         game_id=game.id,
         variant=variant if variant is not None else game.default_variant,
@@ -67,6 +67,7 @@ async def create_puzzle(
                 media_type=MediaType.VIDEO if step == STEP_COUNT else MediaType.IMAGE,
                 hint_kind="year" if has_hint else None,
                 hint_value=str(2000 + step) if has_hint else None,
+                source_url=f"https://example.com/source/{step}",
             )
         )
     await db.flush()

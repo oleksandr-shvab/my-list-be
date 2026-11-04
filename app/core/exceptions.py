@@ -85,6 +85,30 @@ class PuzzleNotFoundError(AppException):
     detail = "Puzzle not found"
 
 
+class TitleNotFoundError(AppException):
+    status_code = 422
+    code = "title_not_found"
+    detail = "Title not found"
+
+
+class DuplicateGuessError(AppException):
+    status_code = 422
+    code = "duplicate_guess"
+    detail = "Title already guessed"
+
+
+class InvalidGuessHistoryError(AppException):
+    status_code = 422
+    code = "invalid_guess_history"
+    detail = "The earlier guesses are not a valid game"
+
+
+class PuzzleAlreadyFinishedError(AppException):
+    status_code = 409
+    code = "puzzle_already_finished"
+    detail = "The puzzle is already finished"
+
+
 class PuzzleDataError(AppException):
     """A scheduled puzzle that breaks a rule of its game (for example a missing step). Not a
     client error: it is a 500 `internal_error`, and the puzzle builder must have caught it before

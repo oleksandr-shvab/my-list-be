@@ -252,6 +252,44 @@
         "title": "GameRead",
         "type": "object"
       },
+      "GuessCreate": {
+        "properties": {
+          "previous": {
+            "description": "The earlier guesses in this game, in order (null is a skip)",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxItems": 20,
+            "title": "Previous",
+            "type": "array"
+          },
+          "title_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The guessed title, or null to skip",
+            "title": "Title Id"
+          }
+        },
+        "required": [
+          "title_id",
+          "previous"
+        ],
+        "title": "GuessCreate",
+        "type": "object"
+      },
       "GuessRead": {
         "properties": {
           "name": {
@@ -1356,6 +1394,136 @@
           }
         },
         "summary": "Get Puzzle",
+        "tags": [
+          "games"
+        ]
+      }
+    },
+    "/v1/games/{slug}/puzzles/{date}/guesses": {
+      "post": {
+        "operationId": "games_submit_guess",
+        "parameters": [
+          {
+            "description": "The game's slug, for example `game-guesser`",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "description": "The game's slug, for example `game-guesser`",
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A day as YYYY-MM-DD",
+            "in": "path",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "description": "A day as YYYY-MM-DD",
+              "format": "date",
+              "title": "Date",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to the game's default variant",
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the game's default variant",
+              "title": "Variant"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuessCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GameGuesserView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Game, variant or puzzle not found (or the puzzle is not visible yet)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The puzzle is already won or lost (`puzzle_already_finished`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "`validation_error` for a malformed body or date, or a refused guess: `title_not_found`, `duplicate_guess` or `invalid_guess_history`"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          }
+        },
+        "summary": "Submit Guess",
         "tags": [
           "games"
         ]

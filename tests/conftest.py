@@ -1,4 +1,5 @@
-from collections.abc import AsyncGenerator
+import datetime as dt
+from collections.abc import AsyncGenerator, Callable, Generator
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
@@ -7,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
+from app.core.clock import get_now
 from app.core.config import serialize_origin, settings
 
 # Point the whole app at the test services before any module opens a connection, and refuse to
@@ -89,6 +91,21 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     ) as ac:
         yield ac
     app.dependency_overrides.clear()
+
+
+SetNow = Callable[[dt.datetime], None]
+
+
+@pytest.fixture
+def set_now() -> Generator[SetNow, None, None]:
+    """Fix the server clock. The override is removed at teardown, so a test that never uses
+    `client` cannot leave a frozen clock behind."""
+
+    def _set_now(now: dt.datetime) -> None:
+        app.dependency_overrides[get_now] = lambda: now
+
+    yield _set_now
+    app.dependency_overrides.pop(get_now, None)
 
 
 @pytest.fixture(autouse=True)

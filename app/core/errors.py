@@ -58,6 +58,10 @@ VALIDATION_CODES = {
     "string_too_short": "too_short",
     "string_too_long": "too_long",
     "string_type": "invalid_type",
+    "int_type": "invalid_type",
+    "list_type": "invalid_type",
+    # A body that is not a JSON object.
+    "model_attributes_type": "invalid_type",
     "value_error": "invalid_value",
     "json_invalid": "invalid_json",
 }
@@ -65,6 +69,8 @@ REQUEST_PARTS = ("body", "path", "query", "header", "cookie")
 VALIDATION_PARAMS = {
     "string_too_short": {"min": "min_length"},
     "string_too_long": {"max": "max_length"},
+    # A list over its `max_length` (the guess body's `previous`).
+    "too_long": {"max": "max_length"},
 }
 
 

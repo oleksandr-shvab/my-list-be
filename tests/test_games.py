@@ -1,7 +1,6 @@
 import datetime as dt
 import importlib.util
 import uuid
-from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
@@ -29,24 +28,13 @@ from app.games.modules.game_guesser import GameGuesserModule
 from app.main import app
 from app.models.puzzle import Puzzle, PuzzleClue, PuzzleStatus
 from app.models.title import Title
+from tests.conftest import SetNow
 from tests.factories import create_game, create_puzzle, create_titles
 
 NOW = dt.datetime(2026, 11, 3, 12, 0, 0, tzinfo=dt.UTC)
 TODAY = NOW.date()
 LAUNCH = TODAY - dt.timedelta(days=3)
 ANSWER_NAME = "Half-Life 2"
-
-SetNow = Callable[[dt.datetime], None]
-
-
-@pytest.fixture
-def set_now() -> SetNow:
-    """Fix the server clock. The `client` fixture clears the override after the test."""
-
-    def _set_now(now: dt.datetime) -> None:
-        app.dependency_overrides[get_now] = lambda: now
-
-    return _set_now
 
 
 @pytest.fixture
@@ -446,6 +434,7 @@ async def test__cache_control__puzzle_routes_are_private_no_store_and_errors_no_
 def _title(title_id: int, name: str) -> TitleData:
     return TitleData(
         id=title_id,
+        kind="video_game",
         name=name,
         normalized_name=name.lower(),
         franchise=None,
@@ -458,6 +447,7 @@ def _puzzle_data(step_count: int = 6) -> PuzzleData:
     return PuzzleData(
         slug="game-guesser",
         variant="default",
+        title_kind="video_game",
         date=TODAY,
         number=4,
         answer=_title(1, ANSWER_NAME),
@@ -562,6 +552,7 @@ def test__get_puzzle__finished_shows_all_six_steps_whatever_the_guess_count(
 def test__get_puzzle__in_progress_serialized_view_has_nothing_of_the_answer() -> None:
     answer = TitleData(
         id=424242,
+        kind="video_game",
         name="Secretname Quest",
         normalized_name="secretname quest",
         franchise="Secretfranchise",
