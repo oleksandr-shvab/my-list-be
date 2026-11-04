@@ -7,15 +7,19 @@ from app.core.clock import utc_today
 from app.core.exceptions import GameNotFoundError, PuzzleNotFoundError, VariantNotFoundError
 from app.crud.game import get_enabled_game_by_slug, list_enabled_games
 from app.crud.puzzle import get_visible_puzzle_with_details
+from app.crud.title import search_titles as search_titles_in_db
 from app.games.modules import MODULES
 from app.games.modules.base import ClueData, GameModule, ProgressState, PuzzleData, TitleData
-from app.games.schemas import GameList, GameRead, PuzzleView
+from app.games.normalize import normalize_text
+from app.games.schemas import GameList, GameRead, PuzzleView, TitleList, TitleRead
 from app.models.game import Game
 from app.models.puzzle import PuzzleClue
 from app.models.title import Title
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
+
+MIN_QUERY_LENGTH = 2
 
 
 async def list_games(db: AsyncSession) -> GameList:
@@ -60,6 +64,29 @@ async def get_puzzle_view(
         clues=tuple(_clue_data(clue) for clue in puzzle.clues),
     )
     return module.get_puzzle(puzzle_data, ProgressState(), is_signed_in=user is not None)
+
+
+def search_query(query: str) -> str | None:
+    """The normalized text to search for, or None when the search must return an empty list: a
+    trimmed `query` under `MIN_QUERY_LENGTH` characters, or a normalized text under it ("a.", "a-"
+    and a decomposed "é" all become one letter), which would match most of the catalogue (AC-20).
+    The one place that rule lives; the benchmark uses it too."""
+    trimmed = query.strip()
+    normalized = normalize_text(trimmed)
+    if len(trimmed) < MIN_QUERY_LENGTH or len(normalized) < MIN_QUERY_LENGTH:
+        return None
+    return normalized
+
+
+async def search_titles(db: AsyncSession, *, slug: str, query: str) -> TitleList:
+    """Titles of the game's kind that fuzzy-match `query` on the name or the franchise. The game
+    is checked first, so an unknown slug is a 404 whatever `q` is."""
+    game, _ = await _resolve_game(db, slug)
+    normalized = search_query(query)
+    if normalized is None:
+        return TitleList(items=[])
+    titles = await search_titles_in_db(db, kind=game.title_kind, normalized_query=normalized)
+    return TitleList(items=[TitleRead.model_validate(title) for title in titles])
 
 
 async def _resolve_game(db: AsyncSession, slug: str) -> tuple[Game, GameModule]:

@@ -439,6 +439,65 @@
         "title": "StepRead",
         "type": "object"
       },
+      "TitleList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TitleRead"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TitleList",
+        "type": "object"
+      },
+      "TitleRead": {
+        "description": "One search result. It has no field that says whether the title is an answer (AC-19).",
+        "properties": {
+          "franchise": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Franchise"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "franchise",
+          "year"
+        ],
+        "title": "TitleRead",
+        "type": "object"
+      },
       "UpdatePasswordRequest": {
         "properties": {
           "confirm_password": {
@@ -1297,6 +1356,82 @@
           }
         },
         "summary": "Get Puzzle",
+        "tags": [
+          "games"
+        ]
+      }
+    },
+    "/v1/games/{slug}/titles": {
+      "get": {
+        "operationId": "games_search_titles",
+        "parameters": [
+          {
+            "description": "The game's slug, for example `game-guesser`",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "description": "The game's slug, for example `game-guesser`",
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Text to find in a title's name or franchise",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "description": "Text to find in a title's name or franchise",
+              "maxLength": 100,
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TitleList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Game not found (`game_not_found`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          }
+        },
+        "summary": "Search Titles",
         "tags": [
           "games"
         ]

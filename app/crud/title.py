@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from collections.abc import Sequence
+
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.games.normalize import normalize_text
@@ -54,3 +56,48 @@ async def find_title_by_name(db: AsyncSession, *, name: str, kind: TitleKind) ->
         select(Title).where(Title.kind == kind, Title.name == name).order_by(Title.id).limit(1)
     )
     return result.scalar_one_or_none()
+
+
+SEARCH_LIMIT = 200
+# Word similarity (`pg_trgm`) a title must reach to match. The default 0.6 misses "zlda" against
+# "the legend of zelda breath of the wild"; 0.4 finds it (SPEC-02 research note).
+SEARCH_SIMILARITY_THRESHOLD = 0.4
+
+
+async def search_titles(db: AsyncSession, *, kind: str, normalized_query: str) -> Sequence[Title]:
+    """At most `SEARCH_LIMIT` titles of this kind whose normalized name or franchise is close to
+    `normalized_query` (the output of `normalize_text`, not empty).
+
+    Ranked by an exact name match, then a name that starts with the query, then the higher
+    word similarity of the name and the franchise, then name (code point order) and id. The trigram operators and
+    `starts_with` take no wildcards, and the text is a bound parameter, so the query is plain
+    text (AC-22). The threshold is set for the current transaction only."""
+    await db.execute(
+        select(
+            func.set_config(
+                "pg_trgm.word_similarity_threshold", str(SEARCH_SIMILARITY_THRESHOLD), True
+            )
+        )
+    )
+    # `%>`: the query is similar to some run of words in the column; the GIN index serves it.
+    name_matches = Title.normalized_name.op("%>")(normalized_query)
+    franchise_matches = Title.normalized_franchise.op("%>")(normalized_query)
+    similarity = func.greatest(
+        func.word_similarity(normalized_query, Title.normalized_name),
+        func.word_similarity(normalized_query, Title.normalized_franchise),
+    )
+    result = await db.execute(
+        select(Title)
+        .where(Title.kind == kind, name_matches | franchise_matches)
+        .order_by(
+            desc(Title.normalized_name == normalized_query),
+            desc(func.starts_with(Title.normalized_name, normalized_query)),
+            desc(similarity),
+            # `COLLATE "C"`: code point order, whatever the database's default collation is, so
+            # ties and the cut at 200 are the same on every Postgres build.
+            Title.name.collate("C"),
+            Title.id,
+        )
+        .limit(SEARCH_LIMIT)
+    )
+    return result.scalars().all()

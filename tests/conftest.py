@@ -4,6 +4,7 @@ from urllib.parse import urlsplit, urlunsplit
 import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.core.config import serialize_origin, settings
@@ -50,6 +51,9 @@ async def engine() -> AsyncGenerator[AsyncEngine, None]:
 
     test_engine = create_async_engine(settings.TEST_DATABASE_URL)
     async with test_engine.begin() as conn:
+        # The trigram indexes of `titles` need the extension, and `create_all` does not run
+        # the migrations (AC-23).
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.create_all)
 
     yield test_engine

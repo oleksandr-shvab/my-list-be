@@ -35,6 +35,21 @@ class GameList(BaseModel):
     items: list[GameRead]
 
 
+class TitleRead(BaseModel):
+    """One search result. It has no field that says whether the title is an answer (AC-19)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    franchise: str | None
+    year: int | None
+
+
+class TitleList(BaseModel):
+    items: list[TitleRead]
+
+
 class HintRead(BaseModel):
     kind: str
     value: str

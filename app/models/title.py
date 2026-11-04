@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, DateTime, Integer, String, func
+from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, enum_check
@@ -19,6 +19,20 @@ class Title(Base):
     __table_args__ = (
         CheckConstraint(enum_check("kind", TitleKind), name="kind"),
         CheckConstraint("normalized_name <> ''", name="normalized_name_not_empty"),
+        # The title search (M1-11) filters with the trigram operators, which these indexes serve.
+        # `alembic check` does not compare the operator class, so the migration is checked by hand.
+        Index(
+            "ix_titles_normalized_name_trgm",
+            "normalized_name",
+            postgresql_using="gin",
+            postgresql_ops={"normalized_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_titles_normalized_franchise_trgm",
+            "normalized_franchise",
+            postgresql_using="gin",
+            postgresql_ops={"normalized_franchise": "gin_trgm_ops"},
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
