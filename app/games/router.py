@@ -6,7 +6,7 @@ from app.api.deps import OptionalUser, SessionDep
 from app.core.clock import NowDep, utc_today
 from app.core.errors import ProblemDetails
 from app.games import service
-from app.games.schemas import GameList, PuzzleView, StrictDate
+from app.games.schemas import GameList, PuzzleView, StrictDate, TitleList
 
 router = APIRouter()
 
@@ -22,6 +22,10 @@ PUZZLE_NOT_FOUND: dict[int | str, dict[str, Any]] = {
         "model": ProblemDetails,
         "description": "Game, variant or puzzle not found (or the puzzle is not visible yet)",
     }
+}
+
+GAME_NOT_FOUND: dict[int | str, dict[str, Any]] = {
+    404: {"model": ProblemDetails, "description": "Game not found (`game_not_found`)"}
 }
 
 Slug = Annotated[str, Path(description="The game's slug, for example `game-guesser`")]
@@ -68,3 +72,16 @@ async def get_puzzle(
     return await service.get_puzzle_view(
         db, slug=slug, variant=variant, puzzle_date=date, now=now, user=user
     )
+
+
+@router.get("/{slug}/titles", response_model=TitleList, responses=GAME_NOT_FOUND)
+async def search_titles(
+    slug: Slug,
+    db: SessionDep,
+    response: Response,
+    q: Annotated[
+        str, Query(max_length=100, description="Text to find in a title's name or franchise")
+    ],
+) -> TitleList:
+    set_cache_control(response, PUBLIC_CACHE)
+    return await service.search_titles(db, slug=slug, query=q)
