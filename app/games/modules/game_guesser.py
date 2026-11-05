@@ -6,13 +6,19 @@ a muted looping clip with the hint `developer`. `hint_kind` stays free text in t
 because other games will have other hints.
 """
 
+from dataclasses import replace
+
 from app.core.exceptions import PuzzleDataError
 from app.games.enums import GuessResult, ProgressStatus
 from app.games.modules.base import (
     ClueData,
+    GameFinishedError,
+    GuessEntry,
     ProgressState,
     PuzzleData,
+    TitleAlreadyGuessedError,
     TitleData,
+    TitleKindMismatchError,
 )
 from app.games.schemas import AnswerRead, GameGuesserView, GuessRead, HintRead, StepRead
 
@@ -21,6 +27,8 @@ STEP_COUNT = 6
 
 
 class GameGuesserModule:
+    max_guesses = MAX_GUESSES
+
     def has_variant(self, variant: str, *, default_variant: str) -> bool:
         # The game has one variant for now: its default (R-4). A list arrives with the word game.
         return variant == default_variant
@@ -63,7 +71,47 @@ class GameGuesserModule:
     def submit_guess(
         self, puzzle: PuzzleData, state: ProgressState, guess: TitleData | None
     ) -> tuple[ProgressState, GuessResult]:
-        raise NotImplementedError("The guess rules arrive in M1-12")
+        """A skip (`None`) is `skipped`. A guess is correct when it is the answer title or has the
+        same normalized name (Q9), `franchise` when it is wrong and both normalized franchises are
+        present and equal (a missing franchise never matches, AC-28), else `wrong`. A correct
+        guess wins; a sixth guess or skip that is not correct loses (AC-29). The score is the
+        number of guesses used, skips included (AC-30)."""
+        if state.status != ProgressStatus.IN_PROGRESS:
+            raise GameFinishedError()
+        if guess is not None:
+            if guess.kind != puzzle.title_kind:
+                raise TitleKindMismatchError()
+            if any(_is_same_title(entry.title, guess) for entry in state.guesses):
+                raise TitleAlreadyGuessedError()
+
+        result = _grade(puzzle.answer, guess)
+        guesses = (*state.guesses, GuessEntry(title=guess, result=result))
+        if result == GuessResult.CORRECT:
+            status = ProgressStatus.WON
+        elif len(guesses) >= MAX_GUESSES:
+            status = ProgressStatus.LOST
+        else:
+            status = ProgressStatus.IN_PROGRESS
+        return replace(state, status=status, guesses=guesses), result
+
+
+def _is_same_title(known: TitleData | None, guess: TitleData) -> bool:
+    """The equivalence of Q9, used for both the answer and a repeated guess: the same title or the
+    same normalized name ("Portal 2" and "PORTAL  2" are one guess)."""
+    return known is not None and (
+        known.id == guess.id or known.normalized_name == guess.normalized_name
+    )
+
+
+def _grade(answer: TitleData, guess: TitleData | None) -> GuessResult:
+    if guess is None:
+        return GuessResult.SKIPPED
+    if _is_same_title(answer, guess):
+        return GuessResult.CORRECT
+    # Truthy, not just present: an empty franchise is a missing one and never matches (AC-28).
+    if guess.normalized_franchise and guess.normalized_franchise == answer.normalized_franchise:
+        return GuessResult.FRANCHISE
+    return GuessResult.WRONG
 
 
 def _step_view(clue: ClueData, is_finished: bool) -> StepRead:

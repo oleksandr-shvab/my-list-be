@@ -2,7 +2,7 @@ import datetime as dt
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt
 
 from app.games.enums import GuessResult, ProgressStatus
 
@@ -48,6 +48,19 @@ class TitleRead(BaseModel):
 
 class TitleList(BaseModel):
     items: list[TitleRead]
+
+
+# A size guard for the request list, apart from the game rule of AC-39 (5 earlier guesses on a
+# guess): the rule answers `invalid_guess_history`, this answers `validation_error` (R-24).
+MAX_PREVIOUS_ENTRIES = 20
+
+
+class GuessCreate(BaseModel):
+    title_id: StrictInt | None = Field(description="The guessed title, or null to skip")
+    previous: list[StrictInt | None] = Field(
+        max_length=MAX_PREVIOUS_ENTRIES,
+        description="The earlier guesses in this game, in order (null is a skip)",
+    )
 
 
 class HintRead(BaseModel):

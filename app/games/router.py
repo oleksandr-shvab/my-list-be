@@ -6,7 +6,7 @@ from app.api.deps import OptionalUser, SessionDep
 from app.core.clock import NowDep, utc_today
 from app.core.errors import ProblemDetails
 from app.games import service
-from app.games.schemas import GameList, PuzzleView, StrictDate, TitleList
+from app.games.schemas import GameList, GuessCreate, PuzzleView, StrictDate, TitleList
 
 router = APIRouter()
 
@@ -22,6 +22,22 @@ PUZZLE_NOT_FOUND: dict[int | str, dict[str, Any]] = {
         "model": ProblemDetails,
         "description": "Game, variant or puzzle not found (or the puzzle is not visible yet)",
     }
+}
+
+# The guess route's own errors, on top of the 404s and the validation error.
+GUESS_ERRORS: dict[int | str, dict[str, Any]] = {
+    **PUZZLE_NOT_FOUND,
+    409: {
+        "model": ProblemDetails,
+        "description": "The puzzle is already won or lost (`puzzle_already_finished`)",
+    },
+    422: {
+        "model": ProblemDetails,
+        "description": (
+            "`validation_error` for a malformed body or date, or a refused guess: "
+            "`title_not_found`, `duplicate_guess` or `invalid_guess_history`"
+        ),
+    },
 }
 
 GAME_NOT_FOUND: dict[int | str, dict[str, Any]] = {
@@ -85,3 +101,27 @@ async def search_titles(
 ) -> TitleList:
     set_cache_control(response, PUBLIC_CACHE)
     return await service.search_titles(db, slug=slug, query=q)
+
+
+@router.post("/{slug}/puzzles/{date}/guesses", response_model=PuzzleView, responses=GUESS_ERRORS)
+async def submit_guess(
+    slug: Slug,
+    date: Annotated[StrictDate, Path(description="A day as YYYY-MM-DD")],
+    body: GuessCreate,
+    db: SessionDep,
+    response: Response,
+    now: NowDep,
+    user: OptionalUser,
+    variant: Variant = None,
+) -> PuzzleView:
+    set_cache_control(response, PRIVATE_NO_STORE)
+    return await service.submit_guess(
+        db,
+        slug=slug,
+        variant=variant,
+        puzzle_date=date,
+        now=now,
+        user=user,
+        title_id=body.title_id,
+        previous=body.previous,
+    )

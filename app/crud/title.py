@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,22 @@ async def find_title_by_name(db: AsyncSession, *, name: str, kind: TitleKind) ->
         select(Title).where(Title.kind == kind, Title.name == name).order_by(Title.id).limit(1)
     )
     return result.scalar_one_or_none()
+
+
+# Title keys are 32-bit integers; asyncpg refuses a larger bound value, which would be a 500.
+MAX_TITLE_ID = 2**31 - 1
+
+
+async def get_titles_by_ids(
+    db: AsyncSession, *, ids: Collection[int], kind: TitleKind
+) -> dict[int, Title]:
+    """The titles of this kind with these ids, by id, in one query. An id that is missing, of
+    another kind, or too large to be a key is left out."""
+    keys = {title_id for title_id in ids if 1 <= title_id <= MAX_TITLE_ID}
+    if not keys:
+        return {}
+    result = await db.execute(select(Title).where(Title.kind == kind, Title.id.in_(keys)))
+    return {title.id: title for title in result.scalars()}
 
 
 SEARCH_LIMIT = 200
