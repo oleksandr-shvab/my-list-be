@@ -6,7 +6,7 @@ from app.api.deps import OptionalUser, SessionDep
 from app.core.clock import NowDep, utc_today
 from app.core.errors import ProblemDetails
 from app.games import service
-from app.games.schemas import GameList, GuessCreate, PuzzleView, StrictDate, TitleList
+from app.games.schemas import GameList, GuessCreate, PuzzleView, ResumeCreate, StrictDate, TitleList
 
 router = APIRouter()
 
@@ -36,6 +36,25 @@ GUESS_ERRORS: dict[int | str, dict[str, Any]] = {
         "description": (
             "`validation_error` for a malformed body or date, or a refused guess: "
             "`title_not_found`, `duplicate_guess` or `invalid_guess_history`"
+        ),
+    },
+    503: {
+        "model": ProblemDetails,
+        "description": (
+            "`service_unavailable`: another request kept this game's lock too long. Nothing was "
+            "stored, and the same guess can be sent again safely"
+        ),
+    },
+}
+
+# The resume route's own errors: the guess route's, minus what only a new guess can hit.
+RESUME_ERRORS: dict[int | str, dict[str, Any]] = {
+    **PUZZLE_NOT_FOUND,
+    422: {
+        "model": ProblemDetails,
+        "description": (
+            "`validation_error` for a malformed body or date, or `invalid_guess_history` for a "
+            "guest's `previous`"
         ),
     },
 }
@@ -123,5 +142,28 @@ async def submit_guess(
         now=now,
         user=user,
         title_id=body.title_id,
+        previous=body.previous,
+    )
+
+
+@router.post("/{slug}/puzzles/{date}/resume", response_model=PuzzleView, responses=RESUME_ERRORS)
+async def resume_puzzle(
+    slug: Slug,
+    date: Annotated[StrictDate, Path(description="A day as YYYY-MM-DD")],
+    body: ResumeCreate,
+    db: SessionDep,
+    response: Response,
+    now: NowDep,
+    user: OptionalUser,
+    variant: Variant = None,
+) -> PuzzleView:
+    set_cache_control(response, PRIVATE_NO_STORE)
+    return await service.resume_puzzle(
+        db,
+        slug=slug,
+        variant=variant,
+        puzzle_date=date,
+        now=now,
+        user=user,
         previous=body.previous,
     )

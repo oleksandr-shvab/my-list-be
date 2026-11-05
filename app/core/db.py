@@ -2,7 +2,8 @@ from collections.abc import AsyncGenerator
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from sqlalchemy import MetaData
+from sqlalchemy import MetaData, func, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -24,6 +25,22 @@ class Base(DeclarativeBase):
     # Fetch server-side defaults (`updated_at` after an update) in the same statement, so reading
     # them after a flush does not trigger a lazy load, which AsyncSession cannot do.
     __mapper_args__: ClassVar[dict[str, Any]] = {"eager_defaults": True}
+
+
+async def set_local(db: AsyncSession, name: str, value: str) -> None:
+    """Set a Postgres setting for the current transaction only: `set_config` with `is_local` true,
+    which this function always passes, so the value never outlives the transaction on a pooled
+    connection."""
+    await db.execute(select(func.set_config(name, value, True)))
+
+
+# SQLSTATE for "lock_timeout expired" (`lock_not_available`).
+LOCK_NOT_AVAILABLE = "55P03"
+
+
+def is_lock_timeout(error: DBAPIError) -> bool:
+    """Whether a database error is Postgres giving up waiting for a lock (`lock_timeout`)."""
+    return getattr(error.orig, "sqlstate", None) == LOCK_NOT_AVAILABLE
 
 
 def enum_check(column: str, enum: type[StrEnum]) -> str:
