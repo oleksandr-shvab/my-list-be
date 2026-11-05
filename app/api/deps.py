@@ -8,9 +8,16 @@ from app.core.db import get_db
 from app.core.exceptions import NotAuthenticatedError
 from app.crud.session import get_session
 from app.crud.user import get_user_by_id
+from app.media.storage import MediaStorage, get_media_storage
 from app.models.user import User
 
 SessionDep = Annotated[AsyncSession, Depends(get_db)]
+# For a route that streams a file: `scope="function"` closes the session (and so ends its
+# transaction and returns its connection to the pool) when the route function returns, before the
+# body is sent. With the default scope it would stay open until the last byte was sent.
+FunctionScopedSessionDep = Annotated[AsyncSession, Depends(get_db, scope="function")]
+# Makes the signed media links of the puzzle view and tells the media route where the files are.
+MediaStorageDep = Annotated[MediaStorage, Depends(get_media_storage)]
 
 
 async def get_optional_user(

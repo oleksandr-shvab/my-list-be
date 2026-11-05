@@ -7,6 +7,7 @@ replay and an account's stored state call the same code (AC-44).
 """
 
 import datetime as dt
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -43,11 +44,35 @@ class TitleData:
 
 
 @dataclass(frozen=True)
+class MediaFileData:
+    """One stored file of a clue (the module sees the key, never a path or a bucket)."""
+
+    role: str
+    key: str
+    content_type: str
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
 class ClueData:
     step: int
     hint_kind: str | None
     hint_value: str | None
     source_url: str | None
+    media_type: str
+    media_files: tuple[MediaFileData, ...]
+
+
+@dataclass(frozen=True)
+class SignedLink:
+    url: str
+    expires_at: dt.datetime
+
+
+# Makes the signed link of a file from its key and content type (R-6). The module calls it only
+# for the steps it shows, so a step that is not earned never gets a link (AC-71).
+MediaSigner = Callable[[str, str], SignedLink]
 
 
 @dataclass(frozen=True)
@@ -86,10 +111,10 @@ class GameModule(Protocol):
         ...
 
     def get_puzzle(
-        self, puzzle: PuzzleData, state: ProgressState, *, is_signed_in: bool
+        self, puzzle: PuzzleData, state: ProgressState, *, is_signed_in: bool, sign: MediaSigner
     ) -> PuzzleView:
         """The view the player may see now: never the answer or a clue not yet earned before the
-        game ends (AC-4)."""
+        game ends (AC-4). `sign` is called for the media of the shown steps only (AC-71)."""
         ...
 
     def submit_guess(

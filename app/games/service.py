@@ -29,17 +29,21 @@ from app.games.modules.base import (
     ClueData,
     GameModule,
     GuessError,
+    MediaFileData,
+    MediaSigner,
     ProgressState,
     PuzzleData,
+    SignedLink,
     TitleAlreadyGuessedError,
     TitleData,
     TitleKindMismatchError,
 )
 from app.games.normalize import normalize_text
 from app.games.schemas import GameList, GameRead, PuzzleView, TitleList, TitleRead
+from app.media.storage import MediaStorage
 from app.models.game import Game
 from app.models.progress import Progress
-from app.models.puzzle import PuzzleClue
+from app.models.puzzle import ClueMediaFile, PuzzleClue
 from app.models.title import Title, TitleKind
 from app.models.user import User
 
@@ -62,6 +66,7 @@ async def get_puzzle_view(
     puzzle_date: dt.date,
     now: dt.datetime,
     user: User | None,
+    storage: MediaStorage,
 ) -> PuzzleView:
     """The view of one puzzle: the account's stored game when there is one, else an empty one. The
     checks run in the order game, variant, puzzle, so a hidden puzzle never shows more than
@@ -70,7 +75,9 @@ async def get_puzzle_view(
         db, slug=slug, variant=variant, puzzle_date=puzzle_date, now=now
     )
     state = await _stored_state(db, module, puzzle, puzzle_id, user)
-    return module.get_puzzle(puzzle, state, is_signed_in=user is not None)
+    return module.get_puzzle(
+        puzzle, state, is_signed_in=user is not None, sign=_media_signer(storage, now)
+    )
 
 
 async def resume_puzzle(
@@ -81,6 +88,7 @@ async def resume_puzzle(
     puzzle_date: dt.date,
     now: dt.datetime,
     user: User | None,
+    storage: MediaStorage,
     previous: list[int | None],
 ) -> PuzzleView:
     """The view after a reload, with nothing changed (AC-38). An account gets its stored game and
@@ -97,7 +105,9 @@ async def resume_puzzle(
             raise InvalidGuessHistoryError()
         titles = await _load_titles(db, puzzle, previous)
         state = _replay_previous(module, puzzle, previous, titles)
-    return module.get_puzzle(puzzle, state, is_signed_in=user is not None)
+    return module.get_puzzle(
+        puzzle, state, is_signed_in=user is not None, sign=_media_signer(storage, now)
+    )
 
 
 async def submit_guess(
@@ -108,6 +118,7 @@ async def submit_guess(
     puzzle_date: dt.date,
     now: dt.datetime,
     user: User | None,
+    storage: MediaStorage,
     title_id: int | None,
     previous: list[int | None],
 ) -> PuzzleView:
@@ -126,10 +137,17 @@ async def submit_guess(
             puzzle_id=puzzle_id,
             user=user,
             now=now,
+            storage=storage,
             title_id=title_id,
         )
     return await _submit_guest_guess(
-        db, module=module, puzzle=puzzle, now=now, title_id=title_id, previous=previous
+        db,
+        module=module,
+        puzzle=puzzle,
+        now=now,
+        storage=storage,
+        title_id=title_id,
+        previous=previous,
     )
 
 
@@ -139,6 +157,7 @@ async def _submit_guest_guess(
     module: GameModule,
     puzzle: PuzzleData,
     now: dt.datetime,
+    storage: MediaStorage,
     title_id: int | None,
     previous: list[int | None],
 ) -> PuzzleView:
@@ -161,7 +180,7 @@ async def _submit_guest_guess(
     # The guest keeps its own copy of the first answer (AC-40), so later requests carry `None`.
     counts_for_streak = utc_today(now) == puzzle.date if not previous else None
     state = replace(state, counts_for_streak=counts_for_streak)
-    return module.get_puzzle(puzzle, state, is_signed_in=False)
+    return module.get_puzzle(puzzle, state, is_signed_in=False, sign=_media_signer(storage, now))
 
 
 async def _submit_account_guess(
@@ -172,6 +191,7 @@ async def _submit_account_guess(
     puzzle_id: int,
     user: User,
     now: dt.datetime,
+    storage: MediaStorage,
     title_id: int | None,
 ) -> PuzzleView:
     """Store the guess on the account's game (AC-36, AC-45). The game row is locked until the
@@ -208,7 +228,7 @@ async def _submit_account_guess(
             raise TitleNotFoundError()
         state = _apply_guess(module, puzzle, state, guess)
         await append_guess(db, progress, title_id=title_id, status=state.status, now=now)
-        view = module.get_puzzle(puzzle, state, is_signed_in=True)
+        view = module.get_puzzle(puzzle, state, is_signed_in=True, sign=_media_signer(storage, now))
         await db.commit()
     except DBAPIError as error:
         await _rollback_keeping_the_error(db)
@@ -307,6 +327,16 @@ def _state_from_progress(
     return state
 
 
+def _media_signer(storage: MediaStorage, now: dt.datetime) -> MediaSigner:
+    """The signer a game module calls for the files of the steps it shows (R-6)."""
+
+    def sign(key: str, content_type: str) -> SignedLink:
+        url, expires_at = storage.signed_url(key, content_type, now)
+        return SignedLink(url=url, expires_at=expires_at)
+
+    return sign
+
+
 async def _load_puzzle(
     db: AsyncSession,
     *,
@@ -398,4 +428,16 @@ def _clue_data(clue: PuzzleClue) -> ClueData:
         hint_kind=clue.hint_kind,
         hint_value=clue.hint_value,
         source_url=clue.source_url,
+        media_type=clue.media_type,
+        media_files=tuple(_media_file_data(file) for file in clue.media_files),
+    )
+
+
+def _media_file_data(file: ClueMediaFile) -> MediaFileData:
+    return MediaFileData(
+        role=file.role,
+        key=file.key,
+        content_type=file.content_type,
+        width=file.width,
+        height=file.height,
     )

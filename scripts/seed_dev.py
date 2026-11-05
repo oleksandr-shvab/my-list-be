@@ -9,13 +9,20 @@ to run unless the ENVIRONMENT variable is exactly `local` and DATABASE_URL point
 It creates the enabled game `game-guesser`, 12 titles with full names (some with franchises, and
 "Doom" and "DOOM" as a pair of near-duplicates), scheduled puzzles for today and the 3 previous
 days, one scheduled puzzle for tomorrow and one draft. Every puzzle has 6 clues. Step 1 has no
-hint, and one puzzle also has no Metacritic hint (step 2), so null hints can be seen in play. Clue
-media arrives with M1-18, so the puzzle view has no images yet.
+hint, and one puzzle also has no Metacritic hint (step 2), so null hints can be seen in play.
+
+The clue media are the placeholder files in `scripts/seed_media/` (made by us, see its README): an
+image for steps 1 to 5, and for step 6 the clip and its poster. The script copies them into
+MEDIA_LOCAL_DIR under their SHA-256 (the media key, AC-74) and gives every clue its file rows. It
+refuses to run when MEDIA_STORAGE is not `local`, because it writes to that folder.
 """
 
 import asyncio
 import datetime as dt
+import hashlib
+import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,8 +37,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clock import get_now, utc_today
 from app.core.config import settings
 from app.crud.title import create_title, find_title_by_name, update_title
+from app.games.enums import ClueRole, MediaType
 from app.models.game import Game
-from app.models.puzzle import MediaType, Puzzle, PuzzleClue, PuzzleStatus
+from app.models.puzzle import ClueMediaFile, Puzzle, PuzzleClue, PuzzleStatus
 from app.models.title import Title, TitleKind
 
 GAME_SLUG = "game-guesser"
@@ -40,6 +48,12 @@ DEFAULT_VARIANT = "default"
 LAUNCH_DAYS_AGO = 3
 # The source credit shown when the game ends. A placeholder: no real source is committed.
 SOURCE_URL = "https://example.com/seed/source"
+
+SEED_MEDIA_DIR = ROOT / "scripts" / "seed_media"
+# The file of each step: an image for steps 1 to 5, the clip (with its poster) for step 6.
+STEP_IMAGES = ["step-1.webp", "step-2.webp", "step-3.webp", "step-4.webp", "step-5.webp"]
+CLIP = "clip.mp4"
+POSTER = "poster.webp"
 
 
 @dataclass(frozen=True)
@@ -99,8 +113,56 @@ def _hint_value(kind: str | None, title: SeedTitle) -> str | None:
     return values[kind] if kind is not None else None
 
 
-async def seed(db: AsyncSession, today: dt.date) -> None:
-    """Create or reset the seed data. The caller commits."""
+@dataclass(frozen=True)
+class StoredMedia:
+    """A seed file copied into the media folder under its key."""
+
+    key: str
+    content_type: str
+    byte_size: int
+    width: int
+    height: int
+    duration_ms: int | None
+
+
+def store_media(media_dir: Path) -> dict[str, StoredMedia]:
+    """Copy the seed files into `media_dir`, each named by its SHA-256 (the media key), and return
+    them by file name. The byte size is that of the file; the rest comes from the manifest."""
+    manifest = json.loads((SEED_MEDIA_DIR / "manifest.json").read_text())
+    media_dir.mkdir(parents=True, exist_ok=True)
+    stored: dict[str, StoredMedia] = {}
+    for name, spec in manifest.items():
+        source = SEED_MEDIA_DIR / name
+        key = hashlib.sha256(source.read_bytes()).hexdigest()
+        shutil.copyfile(source, media_dir / key)
+        stored[name] = StoredMedia(
+            key=key,
+            content_type=spec["content_type"],
+            byte_size=source.stat().st_size,
+            width=spec["width"],
+            height=spec["height"],
+            duration_ms=spec.get("duration_ms"),
+        )
+    return stored
+
+
+def _media_row(clue_id: int, role: ClueRole, file: StoredMedia) -> ClueMediaFile:
+    return ClueMediaFile(
+        clue_id=clue_id,
+        role=role,
+        key=file.key,
+        content_type=file.content_type,
+        byte_size=file.byte_size,
+        width=file.width,
+        height=file.height,
+        duration_ms=file.duration_ms,
+    )
+
+
+async def seed(db: AsyncSession, today: dt.date, *, media_dir: Path) -> None:
+    """Create or reset the seed data and copy the media files into `media_dir`. The caller
+    commits."""
+    media = store_media(media_dir)
     game = (await db.execute(select(Game).where(Game.slug == GAME_SLUG))).scalar_one_or_none()
     if game is None:
         game = Game(slug=GAME_SLUG, title_kind=TitleKind.VIDEO_GAME)
@@ -140,11 +202,12 @@ async def seed(db: AsyncSession, today: dt.date) -> None:
         )
         db.add(puzzle)
         await db.flush()
+        clues: list[PuzzleClue] = []
         for step, kind in enumerate(HINT_KINDS, start=1):
             if kind == "metacritic_score" and not seed_puzzle.has_metacritic_hint:
                 kind = None
             value = _hint_value(kind, seed_titles[seed_puzzle.answer])
-            db.add(
+            clues.append(
                 PuzzleClue(
                     puzzle_id=puzzle.id,
                     step=step,
@@ -154,6 +217,15 @@ async def seed(db: AsyncSession, today: dt.date) -> None:
                     source_url=SOURCE_URL,
                 )
             )
+        # One flush gives all six clues their ids; the media rows need them.
+        db.add_all(clues)
+        await db.flush()
+        for clue in clues:
+            if clue.media_type == MediaType.VIDEO:
+                db.add(_media_row(clue.id, ClueRole.SOURCE, media[CLIP]))
+                db.add(_media_row(clue.id, ClueRole.POSTER, media[POSTER]))
+            else:
+                db.add(_media_row(clue.id, ClueRole.SOURCE, media[STEP_IMAGES[clue.step - 1]]))
     await db.flush()
 
 
@@ -162,7 +234,7 @@ async def _run() -> None:
 
     today = utc_today(get_now())
     async with async_session_maker() as db:
-        await seed(db, today)
+        await seed(db, today, media_dir=settings.media_local_path)
         await db.commit()
     await engine.dispose()
     print(f"Seeded {GAME_SLUG}: {len(TITLES)} titles and {len(PUZZLES)} puzzles around {today}.")
@@ -175,6 +247,8 @@ def refusal_reason() -> str | None:
     environment = os.environ.get("ENVIRONMENT")
     if environment != "local":
         return f"the ENVIRONMENT variable is {environment!r}, not 'local'"
+    if settings.MEDIA_STORAGE != "local":
+        return f"MEDIA_STORAGE is {settings.MEDIA_STORAGE!r}, and the seed writes to a local folder"
     host = urlsplit(settings.DATABASE_URL).hostname
     if host not in LOCAL_HOSTS:
         return f"DATABASE_URL points at host {host!r}, not this machine"

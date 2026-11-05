@@ -8,3 +8,6 @@ __pycache__/
 .pytest_cache/
 
 .idea/
+
+# Local clue media written by the dev seed (MEDIA_LOCAL_DIR)
+var/media/

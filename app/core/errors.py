@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, RangeNotSatisfiableError
 from app.core.request_id import REQUEST_ID_HEADER, new_request_id
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,8 @@ def problem_response(
     response_headers = {
         REQUEST_ID_HEADER: request_id,
         "Cache-Control": "no-store",
+        # No error body is ever read as anything but JSON, whatever route it came from.
+        "X-Content-Type-Options": "nosniff",
         **(headers or {}),
     }
     return JSONResponse(
@@ -152,6 +154,19 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     return problem_response(request, exc.status_code, exc.code, exc.detail, params=exc.params)
 
 
+async def range_not_satisfiable_handler(
+    request: Request, exc: RangeNotSatisfiableError
+) -> JSONResponse:
+    # A 416 says how big the file is (RFC 9110 section 15.5.17).
+    return problem_response(
+        request,
+        exc.status_code,
+        exc.code,
+        exc.detail,
+        headers={"Content-Range": f"bytes */{exc.size}"},
+    )
+
+
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
@@ -186,6 +201,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppException, app_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RangeNotSatisfiableError, range_not_satisfiable_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, unhandled_exception_handler)

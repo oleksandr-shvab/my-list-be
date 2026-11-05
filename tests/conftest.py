@@ -1,5 +1,6 @@
 import datetime as dt
 from collections.abc import AsyncGenerator, Callable, Generator
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
@@ -23,6 +24,8 @@ settings.REDIS_URL = settings.TEST_REDIS_URL
 from app.core.db import Base, get_db
 from app.core.redis import redis_client
 from app.main import app
+from app.media.storage import get_media_storage
+from tests.factories import make_local_storage
 
 # An allowed origin (FRONTEND_URL's), sent by the `client` fixture on every request.
 TEST_ORIGIN = serialize_origin(settings.FRONTEND_URL)
@@ -80,11 +83,15 @@ async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+async def client(db_session: AsyncSession, tmp_path: Path) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
+    # Media links come from a storage of the tests' own (a temp folder, a fixed key, base URL and
+    # lifetimes), never from the developer's `.env`.
+    storage = make_local_storage(tmp_path)
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_media_storage] = lambda: storage
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport, base_url="http://test", headers={"Origin": TEST_ORIGIN}

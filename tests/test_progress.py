@@ -35,7 +35,13 @@ from app.models.puzzle import PuzzleClue
 from app.models.title import Title
 from app.models.user import User
 from tests.conftest import SetNow
-from tests.factories import create_game, create_puzzle, create_titles
+from tests.factories import (
+    TEST_MEDIA_BASE_URL,
+    create_game,
+    create_puzzle,
+    create_titles,
+    make_local_storage,
+)
 
 NOW = dt.datetime(2026, 11, 3, 12, 0, 0, tzinfo=dt.UTC)
 TODAY = NOW.date()
@@ -104,6 +110,20 @@ async def _new_user(db: AsyncSession, email: str) -> User:
     return account
 
 
+def _assert_signed_media(view: PuzzleView) -> None:
+    """Every view that comes back, from any path (account or guest guess, resume, the stored
+    view), has the signed links of its earned steps and no other link: one image link per step,
+    and for step 6 the clip and its poster (AC-71). Run by the helpers below, so every row of
+    every table checks it."""
+    links = [source.url for step in view.steps for source in step.media.sources]
+    links += [step.media.poster.url for step in view.steps if step.media.poster is not None]
+    assert len(links) == len(view.steps) + (1 if len(view.steps) == 6 else 0)
+    for url in links:
+        assert url.startswith(f"{TEST_MEDIA_BASE_URL}/v1/media/"), url
+        assert "?exp=" in url and "&sig=" in url, url
+    assert view.model_dump_json().count("/v1/media/") == len(links)
+
+
 async def _guess(
     db: AsyncSession,
     ids: Ids,
@@ -115,16 +135,19 @@ async def _guess(
     puzzle_date: dt.date = TODAY,
 ) -> PuzzleView:
     try:
-        return await service.submit_guess(
+        view = await service.submit_guess(
             db,
             slug=SLUG,
             variant=None,
             puzzle_date=puzzle_date,
             now=now,
             user=user,
+            storage=make_local_storage(),
             title_id=_resolve(ids, token),
             previous=[_resolve(ids, entry) for entry in previous or []],
         )
+        _assert_signed_media(view)
+        return view
     finally:
         if user is not None and user in db:
             # A refused guess rolls the session back, which expires the test's long-lived `user`.
@@ -140,21 +163,32 @@ async def _resume(
     *,
     puzzle_date: dt.date = TODAY,
 ) -> PuzzleView:
-    return await service.resume_puzzle(
+    view = await service.resume_puzzle(
         db,
         slug=SLUG,
         variant=None,
         puzzle_date=puzzle_date,
         now=NOW,
         user=user,
+        storage=make_local_storage(),
         previous=[_resolve(ids, entry) for entry in previous],
     )
+    _assert_signed_media(view)
+    return view
 
 
 async def _view(db: AsyncSession, user: User | None, *, puzzle_date: dt.date = TODAY) -> PuzzleView:
-    return await service.get_puzzle_view(
-        db, slug=SLUG, variant=None, puzzle_date=puzzle_date, now=NOW, user=user
+    view = await service.get_puzzle_view(
+        db,
+        slug=SLUG,
+        variant=None,
+        puzzle_date=puzzle_date,
+        now=NOW,
+        user=user,
+        storage=make_local_storage(),
     )
+    _assert_signed_media(view)
+    return view
 
 
 async def _play(db: AsyncSession, ids: Ids, user: User, tokens: list[str | None]) -> None:
@@ -566,6 +600,7 @@ async def test__resume__hidden_puzzle_variant_or_game_is_refused_before_previous
         "variant": None,
         "puzzle_date": TODAY,
         "now": NOW,
+        "storage": make_local_storage(),
         "previous": [UNKNOWN],  # An invalid history, so only the lookup can refuse it first.
         **kwargs,
     }
@@ -741,7 +776,7 @@ async def committed(engine: AsyncEngine) -> AsyncGenerator[Committed, None]:
         async with engine.begin() as conn:
             await conn.execute(
                 text(
-                    "TRUNCATE progress_guesses, progress, puzzle_clues, puzzles, titles, games, "
+                    "TRUNCATE progress_guesses, progress, clue_media_files, puzzle_clues, puzzles, titles, games, "
                     "users RESTART IDENTITY CASCADE"
                 )
             )

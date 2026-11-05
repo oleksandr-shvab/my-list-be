@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt
 
-from app.games.enums import GuessResult, ProgressStatus
+from app.games.enums import GuessResult, MediaType, ProgressStatus
 
 DATE_FORMAT = "YYYY-MM-DD"
 
@@ -79,9 +79,35 @@ class HintRead(BaseModel):
     value: str
 
 
+class MediaSourceRead(BaseModel):
+    url: str = Field(description="A signed link, used as it is: do not prefix it")
+    content_type: str
+
+
+class PosterRead(BaseModel):
+    url: str = Field(description="A signed link to the still frame of a video")
+    content_type: str
+    expires_at: dt.datetime
+
+
+class MediaRead(BaseModel):
+    """The media of one earned step (AC-25). When `expires_at` has passed, ask for the view again
+    (AC-73)."""
+
+    type: MediaType
+    width: int
+    height: int
+    expires_at: dt.datetime = Field(description="When the links in `sources` stop working")
+    sources: list[MediaSourceRead] = Field(
+        description="Use in order: the first one the browser can play. WebM first, MP4 last"
+    )
+    poster: PosterRead | None = Field(description="The still frame of a video; null for an image")
+
+
 class StepRead(BaseModel):
     step: int
     hint: HintRead | None
+    media: MediaRead
     source_url: str | None = Field(description="Null until the game ends")
 
 

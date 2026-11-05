@@ -1,13 +1,70 @@
+import ipaddress
+import re
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PLACEHOLDER_SECRET_KEYS = {"change-me", "changeme", "secret", "password"}
 MIN_SECRET_KEY_LENGTH = 32
+# The backend repo root (this file is `app/core/config.py`). A relative MEDIA_LOCAL_DIR is read
+# from here, so the seed and the server use one folder whatever their working directory is.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PORTS = {"http": 80, "https": 443}
+# The default signing key of local development. It is long enough, so the deployed check refuses
+# it by name.
+DEV_MEDIA_SIGNING_KEY = "dev-only-media-signing-key-do-not-use-in-production"
+
+
+def is_weak_secret(value: str) -> bool:
+    """A placeholder, or shorter than `MIN_SECRET_KEY_LENGTH`. One rule for every secret key."""
+    return value.lower() in PLACEHOLDER_SECRET_KEYS or len(value) < MIN_SECRET_KEY_LENGTH
+
+
+# A path prefix made only of plain segments: no `.` or `..`, no empty segment, no escapes.
+CLEAN_PATH = re.compile(r"(?:/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)*/?", re.ASCII)
+
+
+# One label of a host name: letters, digits and inner hyphens, at most 63 characters.
+HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", re.ASCII)
+# Printable ASCII with no space: a URL in a setting has no whitespace, control or non-ASCII
+# character (`urlsplit` would silently drop a tab or a newline inside it).
+PLAIN_URL_TEXT = re.compile(r"[\x21-\x7e]+", re.ASCII)
+
+
+def _is_valid_host(host: str) -> bool:
+    """A host name (also an IPv4 address) or an IPv6 address (`urlsplit` strips its brackets)."""
+    if ":" in host:
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return False
+        return True
+    labels = host.split(".")
+    return len(host) <= 253 and all(HOST_LABEL.fullmatch(label) for label in labels)
+
+
+def is_clean_base_url(value: str) -> bool:
+    """An absolute http(s) URL with a valid host (a host name, an IPv4 or a bracketed IPv6
+    address) that can have a clean path prefix (`https://site/api`) and nothing else: no
+    credentials, query, fragment, whitespace, `..` or escapes. Links are built by adding
+    `/v1/media/...` to it."""
+    if PLAIN_URL_TEXT.fullmatch(value) is None or "?" in value or "#" in value:
+        return False
+    if serialize_origin(value) is None:
+        return False
+    parts = urlsplit(value)
+    if parts.hostname is None or not _is_valid_host(parts.hostname):
+        return False
+    return CLEAN_PATH.fullmatch(parts.path) is not None
+
+
+def is_https(value: str) -> bool:
+    """Whether a URL's scheme is https, in any letter case (`HTTPS://` is the same scheme)."""
+    return urlsplit(value).scheme.lower() == "https"
 
 
 def serialize_origin(value: str, *, strict: bool = False) -> str | None:
@@ -75,6 +132,31 @@ class Settings(BaseSettings):
 
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
+    # Clue media (M1-18). `local` serves the files itself from MEDIA_LOCAL_DIR; `s3` links to a
+    # bucket with presigned URLs.
+    MEDIA_STORAGE: Literal["local", "s3"] = "local"
+    MEDIA_LOCAL_DIR: str = "var/media"
+    # The base of local links. The dev default goes through the frontend's proxy, so a link loads
+    # from the page with no CORS and no cookie. With local storage in production: `https://<site>/api`.
+    MEDIA_LOCAL_BASE_URL: str = "http://localhost:5173/api"
+    # Signs local links. A separate secret from SECRET_KEY, so a leak of one does not give the other.
+    MEDIA_SIGNING_KEY: SecretStr = SecretStr(DEV_MEDIA_SIGNING_KEY)
+    # Image and poster links, and video links, live for their own time (AC-70, AC-70b): a browser
+    # keeps asking for parts of a looping clip while it plays.
+    MEDIA_IMAGE_LINK_TTL_SECONDS: int = Field(default=600, ge=60, le=3600)
+    MEDIA_VIDEO_LINK_TTL_SECONDS: int = Field(default=3600, ge=600, le=86400)
+    S3_ENDPOINT_URL: str | None = None
+    S3_REGION: str | None = None
+    S3_BUCKET: str | None = None
+    S3_ACCESS_KEY_ID: str | None = None
+    S3_SECRET_ACCESS_KEY: SecretStr | None = None
+
+    @property
+    def media_local_path(self) -> Path:
+        """The folder of local media. A relative MEDIA_LOCAL_DIR is read from the backend repo
+        root, not from the working directory."""
+        return PROJECT_ROOT / self.MEDIA_LOCAL_DIR
+
     @property
     def is_deployed(self) -> bool:
         return self.ENVIRONMENT in ("staging", "production")
@@ -96,16 +178,12 @@ class Settings(BaseSettings):
         if serialize_origin(self.FRONTEND_URL) is None:
             problems.append("FRONTEND_URL must be an absolute http(s) URL")
         if self.is_deployed:
-            secret_key = self.SECRET_KEY.get_secret_value()
-            if (
-                secret_key.lower() in PLACEHOLDER_SECRET_KEYS
-                or len(secret_key) < MIN_SECRET_KEY_LENGTH
-            ):
+            if is_weak_secret(self.SECRET_KEY.get_secret_value()):
                 problems.append(
                     f"SECRET_KEY must not be a placeholder and must be at least "
                     f"{MIN_SECRET_KEY_LENGTH} characters"
                 )
-            if not self.FRONTEND_URL.startswith("https://"):
+            if not is_https(self.FRONTEND_URL):
                 problems.append("FRONTEND_URL must use https")
             for origin in self.BACKEND_CORS_ORIGINS:
                 if origin == "*" or "localhost" in origin or "127.0.0.1" in origin:
@@ -119,11 +197,55 @@ class Settings(BaseSettings):
                     problems.append(
                         f"BACKEND_CORS_ORIGINS entry {origin!r} must be an absolute http(s) URL"
                     )
+        problems.extend(self._media_problems())
         if problems:
             raise ValueError(
                 f"Unsafe configuration for ENVIRONMENT={self.ENVIRONMENT}: " + "; ".join(problems)
             )
         return self
+
+    def _media_problems(self) -> list[str]:
+        problems: list[str] = []
+        if self.MEDIA_STORAGE == "s3":
+            s3_values = {
+                "S3_ENDPOINT_URL": self.S3_ENDPOINT_URL,
+                "S3_REGION": self.S3_REGION,
+                "S3_BUCKET": self.S3_BUCKET,
+                "S3_ACCESS_KEY_ID": self.S3_ACCESS_KEY_ID,
+                "S3_SECRET_ACCESS_KEY": self.S3_SECRET_ACCESS_KEY,
+            }
+            missing = [name for name, value in s3_values.items() if not value]
+            if missing:
+                problems.append(f"MEDIA_STORAGE=s3 needs {', '.join(missing)}")
+            else:
+                endpoint = self.S3_ENDPOINT_URL or ""
+                if not is_clean_base_url(endpoint):
+                    problems.append(
+                        "S3_ENDPOINT_URL must be an absolute http(s) URL with no query, "
+                        "fragment or credentials"
+                    )
+                elif self.is_deployed and not is_https(endpoint):
+                    problems.append("S3_ENDPOINT_URL must use https")
+            return problems
+        if not is_clean_base_url(self.MEDIA_LOCAL_BASE_URL):
+            problems.append(
+                "MEDIA_LOCAL_BASE_URL must be an absolute http(s) URL with at most a plain path "
+                "prefix (no query, fragment or credentials)"
+            )
+        if self.is_deployed:
+            # Local storage can be real in production (the fallback of AC-72c), so its links
+            # need a real key.
+            signing_key = self.MEDIA_SIGNING_KEY.get_secret_value()
+            if signing_key == DEV_MEDIA_SIGNING_KEY or is_weak_secret(signing_key):
+                problems.append(
+                    f"MEDIA_SIGNING_KEY must not be a placeholder and must be at least "
+                    f"{MIN_SECRET_KEY_LENGTH} characters"
+                )
+            if signing_key == self.SECRET_KEY.get_secret_value():
+                problems.append("MEDIA_SIGNING_KEY must differ from SECRET_KEY")
+            if not is_https(self.MEDIA_LOCAL_BASE_URL):
+                problems.append("MEDIA_LOCAL_BASE_URL must use https")
+        return problems
 
 
 settings = Settings()

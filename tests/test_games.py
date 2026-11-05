@@ -16,12 +16,13 @@ from app.core.exceptions import PuzzleDataError
 from app.crud.session import create_session
 from app.crud.title import create_title
 from app.crud.user import deactivate_user, get_user_by_id
-from app.games.enums import GuessResult, ProgressStatus
+from app.games.enums import ClueContentType, ClueRole, GuessResult, ProgressStatus
 from app.games.modules.base import (
-    ClueData,
     GuessEntry,
+    MediaFileData,
     ProgressState,
     PuzzleData,
+    SignedLink,
     TitleData,
 )
 from app.games.modules.game_guesser import GameGuesserModule
@@ -29,7 +30,16 @@ from app.main import app
 from app.models.puzzle import Puzzle, PuzzleClue, PuzzleStatus
 from app.models.title import Title
 from tests.conftest import SetNow
-from tests.factories import create_game, create_puzzle, create_titles
+from tests.factories import (
+    IMAGE_TTL_SECONDS,
+    TEST_MEDIA_BASE_URL,
+    create_game,
+    create_puzzle,
+    create_titles,
+    fake_sign,
+    make_clue,
+    media_key,
+)
 
 NOW = dt.datetime(2026, 11, 3, 12, 0, 0, tzinfo=dt.UTC)
 TODAY = NOW.date()
@@ -87,7 +97,9 @@ async def test__list_games__only_enabled_games_with_a_module_and_public_cache(
 
 
 @pytest.mark.usefixtures("seeded")
-async def test__get_today_puzzle__step_one_only_and_no_answer(client: AsyncClient) -> None:
+async def test__get_today_puzzle__step_one_only_and_no_answer(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
     response = await client.get("/v1/games/game-guesser/puzzles/today")
 
     assert response.status_code == 200
@@ -109,6 +121,23 @@ async def test__get_today_puzzle__step_one_only_and_no_answer(client: AsyncClien
     assert body["answer"] is None
     assert ANSWER_NAME not in response.text
     assert '"title_id"' not in response.text
+
+    # AC-25 and AC-71: step 1 has its signed image link, and nothing of the later steps or of the
+    # video's poster (no key and no link) is anywhere in the body.
+    puzzle = await db_session.scalar(select(Puzzle).where(Puzzle.date == TODAY))
+    assert puzzle is not None
+    first_key = media_key(puzzle.id, 1, "source")
+    media = body["steps"][0]["media"]
+    assert (media["type"], media["width"], media["height"]) == ("image", 640, 360)
+    expected_expiry = NOW + dt.timedelta(seconds=IMAGE_TTL_SECONDS)
+    assert media["expires_at"] == expected_expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert media["poster"] is None
+    assert [source["content_type"] for source in media["sources"]] == ["image/webp"]
+    assert media["sources"][0]["url"].startswith(f"{TEST_MEDIA_BASE_URL}/v1/media/{first_key}?")
+    for step, name in [(2, "source"), (3, "source"), (4, "source"), (5, "source"), (6, "source")]:
+        assert media_key(puzzle.id, step, name) not in response.text
+    assert media_key(puzzle.id, 6, "poster") not in response.text
+    assert response.text.count("/v1/media/") == 1
 
 
 @pytest.mark.usefixtures("seeded")
@@ -335,7 +364,15 @@ async def test__puzzle_view__has_exactly_the_ac25_keys_and_no_internal_ids(
         "counts_for_streak",
         "signed_in",
     }
-    assert set(body["steps"][0]) == {"step", "hint", "source_url"}
+    assert set(body["steps"][0]) == {"step", "hint", "media", "source_url"}
+    assert set(body["steps"][0]["media"]) == {
+        "type",
+        "width",
+        "height",
+        "expires_at",
+        "sources",
+        "poster",
+    }
     # AC-5: a puzzle is addressed by (slug, variant, date) only.
     for internal_id in ("puzzle_id", "game_id", "clue_id", "answer_title_id", "progress_id"):
         assert internal_id not in response.text
@@ -452,8 +489,8 @@ def _puzzle_data(step_count: int = 6) -> PuzzleData:
         number=4,
         answer=_title(1, ANSWER_NAME),
         clues=tuple(
-            ClueData(
-                step=step,
+            make_clue(
+                step,
                 hint_kind=None if step == 1 else "year",
                 hint_value=None if step == 1 else "2004",
                 source_url=f"https://example.com/{step}",
@@ -478,7 +515,7 @@ def _guesses(*results: GuessResult) -> tuple[GuessEntry, ...]:
 def test__get_puzzle__in_progress_shows_one_step_more_than_the_guesses_used() -> None:
     state = ProgressState(guesses=_guesses(GuessResult.SKIPPED, GuessResult.WRONG))
 
-    view = GameGuesserModule().get_puzzle(_puzzle_data(), state, is_signed_in=True)
+    view = GameGuesserModule().get_puzzle(_puzzle_data(), state, is_signed_in=True, sign=fake_sign)
 
     assert [step.step for step in view.steps] == [1, 2, 3]
     assert all(step.source_url is None for step in view.steps)
@@ -494,7 +531,7 @@ def test__get_puzzle__finished_shows_all_steps_with_source_and_the_answer(
 ) -> None:
     state = ProgressState(status=status, guesses=_guesses(GuessResult.WRONG))
 
-    view = GameGuesserModule().get_puzzle(_puzzle_data(), state, is_signed_in=False)
+    view = GameGuesserModule().get_puzzle(_puzzle_data(), state, is_signed_in=False, sign=fake_sign)
 
     assert [step.step for step in view.steps] == [1, 2, 3, 4, 5, 6]
     assert view.steps[0].hint is None
@@ -507,16 +544,14 @@ def test__get_puzzle__finished_shows_all_steps_with_source_and_the_answer(
 def test__get_puzzle__fewer_than_six_clues_raises() -> None:
     with pytest.raises(PuzzleDataError):
         GameGuesserModule().get_puzzle(
-            _puzzle_data(step_count=5), ProgressState(), is_signed_in=False
+            _puzzle_data(step_count=5), ProgressState(), is_signed_in=False, sign=fake_sign
         )
 
 
 def _with_steps(steps: tuple[int, ...]) -> PuzzleData:
     return replace(
         _puzzle_data(),
-        clues=tuple(
-            ClueData(step=step, hint_kind=None, hint_value=None, source_url=None) for step in steps
-        ),
+        clues=tuple(make_clue(step) for step in steps),
     )
 
 
@@ -526,7 +561,7 @@ def test__get_puzzle__in_progress_steps_are_one_to_guesses_used_plus_one(
 ) -> None:
     state = ProgressState(guesses=_guesses(*[GuessResult.WRONG] * guesses_used))
 
-    view = GameGuesserModule().get_puzzle(_puzzle_data(), state, is_signed_in=False)
+    view = GameGuesserModule().get_puzzle(_puzzle_data(), state, is_signed_in=False, sign=fake_sign)
 
     assert [step.step for step in view.steps] == list(range(1, guesses_used + 2))
     assert (view.guesses_used, view.guesses_left) == (guesses_used, 6 - guesses_used)
@@ -539,7 +574,9 @@ def test__get_puzzle__finished_shows_all_six_steps_whatever_the_guess_count(
     for guesses_used in (0, 1, 6):
         state = ProgressState(status=status, guesses=_guesses(*[GuessResult.WRONG] * guesses_used))
 
-        view = GameGuesserModule().get_puzzle(_puzzle_data(), state, is_signed_in=True)
+        view = GameGuesserModule().get_puzzle(
+            _puzzle_data(), state, is_signed_in=True, sign=fake_sign
+        )
 
         assert [step.step for step in view.steps] == [1, 2, 3, 4, 5, 6]
         assert [step.source_url for step in view.steps] == [
@@ -563,7 +600,7 @@ def test__get_puzzle__in_progress_serialized_view_has_nothing_of_the_answer() ->
     for guesses_used in range(6):
         state = ProgressState(guesses=_guesses(*[GuessResult.WRONG] * guesses_used))
 
-        view = GameGuesserModule().get_puzzle(puzzle, state, is_signed_in=True)
+        view = GameGuesserModule().get_puzzle(puzzle, state, is_signed_in=True, sign=fake_sign)
 
         assert view.answer is None
         assert all(step.source_url is None for step in view.steps)
@@ -607,7 +644,127 @@ def test__has_variant__is_true_only_for_the_games_default_variant(
 )
 def test__get_puzzle__clue_steps_that_are_not_one_to_six_raise(steps: tuple[int, ...]) -> None:
     with pytest.raises(PuzzleDataError):
-        GameGuesserModule().get_puzzle(_with_steps(steps), ProgressState(), is_signed_in=False)
+        GameGuesserModule().get_puzzle(
+            _with_steps(steps), ProgressState(), is_signed_in=False, sign=fake_sign
+        )
+
+
+# Media in the view, on plain data (AC-13b, AC-25, AC-71).
+
+
+def _file(role: ClueRole, content_type: ClueContentType, name: str) -> MediaFileData:
+    return MediaFileData(
+        role=role, key=media_key(9, 0, name), content_type=content_type, width=640, height=360
+    )
+
+
+MP4 = _file(ClueRole.SOURCE, ClueContentType.VIDEO_MP4, "mp4")
+WEBM = _file(ClueRole.SOURCE, ClueContentType.VIDEO_WEBM, "webm")
+POSTER = _file(ClueRole.POSTER, ClueContentType.IMAGE_WEBP, "poster")
+IMAGE = _file(ClueRole.SOURCE, ClueContentType.IMAGE_WEBP, "image")
+
+
+def _with_media(step: int, media_type: str, *files: MediaFileData) -> PuzzleData:
+    clue = replace(make_clue(step), media_type=media_type, media_files=files)
+    puzzle = _puzzle_data()
+    clues = tuple(clue if existing.step == step else existing for existing in puzzle.clues)
+    return replace(puzzle, clues=clues)
+
+
+def test__get_puzzle__step_six_is_a_video_with_webm_first_mp4_last_and_a_poster() -> None:
+    puzzle = _with_media(6, "video", MP4, POSTER, WEBM)
+    state = ProgressState(status=ProgressStatus.LOST, guesses=_guesses(*[GuessResult.WRONG] * 6))
+
+    view = GameGuesserModule().get_puzzle(puzzle, state, is_signed_in=False, sign=fake_sign)
+
+    media = view.steps[5].media
+    assert media.type == "video"
+    assert [source.content_type for source in media.sources] == ["video/webm", "video/mp4"]
+    assert [source.url for source in media.sources] == [
+        f"https://media.test/{file.key}?type={file.content_type}" for file in (WEBM, MP4)
+    ]
+    assert media.poster is not None
+    assert media.poster.url == f"https://media.test/{POSTER.key}?type=image/webp"
+    assert media.poster.content_type == "image/webp"
+    assert (media.width, media.height) == (640, 360)
+    # An image step has one source and no poster.
+    image = view.steps[0].media
+    assert (image.type, len(image.sources), image.poster) == ("image", 1, None)
+
+
+def test__get_puzzle__a_video_without_webm_lists_the_mp4_alone() -> None:
+    puzzle = _with_media(6, "video", MP4, POSTER)
+    state = ProgressState(status=ProgressStatus.WON, guesses=_guesses(GuessResult.WRONG))
+
+    view = GameGuesserModule().get_puzzle(puzzle, state, is_signed_in=False, sign=fake_sign)
+
+    assert [source.content_type for source in view.steps[5].media.sources] == ["video/mp4"]
+
+
+@pytest.mark.parametrize("guesses_used", range(6))
+def test__get_puzzle__only_the_earned_steps_are_signed(guesses_used: int) -> None:
+    signed: list[str] = []
+
+    def spy(key: str, content_type: str) -> SignedLink:
+        signed.append(key)
+        return fake_sign(key, content_type)
+
+    puzzle = _puzzle_data()
+    state = ProgressState(guesses=_guesses(*[GuessResult.WRONG] * guesses_used))
+
+    GameGuesserModule().get_puzzle(puzzle, state, is_signed_in=False, sign=spy)
+
+    earned = puzzle.clues[: guesses_used + 1]
+    assert signed == [file.key for clue in earned for file in clue.media_files]
+    # The video and its poster are signed only when step 6 is earned.
+    video_keys = {file.key for file in puzzle.clues[5].media_files}
+    assert bool(video_keys & set(signed)) is (guesses_used == 5)
+
+
+def test__get_puzzle__a_finished_game_signs_all_six_steps() -> None:
+    signed: list[str] = []
+
+    def spy(key: str, content_type: str) -> SignedLink:
+        signed.append(key)
+        return fake_sign(key, content_type)
+
+    puzzle = _puzzle_data()
+    state = ProgressState(status=ProgressStatus.WON, guesses=_guesses(GuessResult.WRONG))
+
+    GameGuesserModule().get_puzzle(puzzle, state, is_signed_in=False, sign=spy)
+
+    assert signed == [file.key for clue in puzzle.clues for file in clue.media_files]
+
+
+@pytest.mark.parametrize(
+    ("step", "media_type", "files"),
+    [
+        pytest.param(6, "video", (POSTER,), id="video_without_mp4"),
+        pytest.param(6, "video", (MP4,), id="video_without_poster"),
+        pytest.param(6, "video", (MP4, WEBM), id="video_with_webm_but_no_poster"),
+        pytest.param(6, "video", (WEBM, POSTER), id="video_with_webm_only"),
+        pytest.param(6, "video", (MP4, MP4, POSTER), id="video_with_two_mp4"),
+        pytest.param(6, "video", (MP4, POSTER, POSTER), id="video_with_two_posters"),
+        pytest.param(6, "video", (MP4, WEBM, WEBM, POSTER), id="video_with_two_webm"),
+        pytest.param(6, "video", (MP4, IMAGE, POSTER), id="video_with_an_image_source"),
+        pytest.param(6, "video", (), id="video_without_files"),
+        pytest.param(1, "image", (), id="image_without_files"),
+        pytest.param(1, "image", (IMAGE, IMAGE), id="image_with_two_files"),
+        pytest.param(1, "image", (IMAGE, POSTER), id="image_with_a_poster"),
+        pytest.param(1, "image", (MP4,), id="image_that_is_an_mp4"),
+        pytest.param(1, "audio", (IMAGE,), id="unknown_media_type"),
+        # A broken step the player has not reached is found at step 1, not on the day of step 6.
+        pytest.param(5, "image", (), id="unearned_image_step_without_files"),
+        pytest.param(6, "video", (MP4,), id="unearned_video_step_without_poster"),
+    ],
+)
+def test__get_puzzle__media_that_break_ac13b_raise_even_for_an_unearned_step(
+    step: int, media_type: str, files: tuple[MediaFileData, ...]
+) -> None:
+    puzzle = _with_media(step, media_type, *files)
+
+    with pytest.raises(PuzzleDataError):
+        GameGuesserModule().get_puzzle(puzzle, ProgressState(), is_signed_in=False, sign=fake_sign)
 
 
 # The dev seed.
@@ -623,13 +780,13 @@ def _load_seed_script() -> ModuleType:
 
 
 async def test__seed_dev__can_run_twice_and_gives_a_playable_game(
-    client: AsyncClient, db_session: AsyncSession, set_now: SetNow
+    client: AsyncClient, db_session: AsyncSession, set_now: SetNow, tmp_path: Path
 ) -> None:
     seed_dev = _load_seed_script()
     set_now(NOW)
 
-    await seed_dev.seed(db_session, TODAY)
-    await seed_dev.seed(db_session, TODAY)
+    await seed_dev.seed(db_session, TODAY, media_dir=tmp_path)
+    await seed_dev.seed(db_session, TODAY, media_dir=tmp_path)
 
     listing = (await client.get("/v1/games")).json()["items"]
     assert [game["slug"] for game in listing] == ["game-guesser"]
@@ -655,7 +812,7 @@ async def test__seed_dev__can_run_twice_and_gives_a_playable_game(
 
 
 async def test__seed_dev__updates_existing_titles_and_survives_duplicates(
-    db_session: AsyncSession,
+    db_session: AsyncSession, tmp_path: Path
 ) -> None:
     seed_dev = _load_seed_script()
     # An old run left this title with another franchise, year and normalized name, twice.
@@ -668,7 +825,7 @@ async def test__seed_dev__updates_existing_titles_and_survives_duplicates(
     )
     await db_session.refresh(stale[0])
 
-    await seed_dev.seed(db_session, TODAY)
+    await seed_dev.seed(db_session, TODAY, media_dir=tmp_path)
 
     rows = (
         (
@@ -713,6 +870,19 @@ def test__seed_dev__refuses_a_database_on_another_host(
 
     assert seed_dev.main() == 1
     assert seed_dev.refusal_reason() is not None
+
+
+def test__seed_dev__refuses_to_write_media_when_the_storage_is_not_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_dev = _load_seed_script()
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setattr(settings, "DATABASE_URL", "postgresql+asyncpg://u:p@localhost:5544/db")
+    monkeypatch.setattr(settings, "MEDIA_STORAGE", "s3")
+
+    assert seed_dev.main() == 1
+    reason = seed_dev.refusal_reason()
+    assert reason is not None and "MEDIA_STORAGE" in reason
 
 
 @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
