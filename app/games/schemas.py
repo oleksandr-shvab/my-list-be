@@ -55,12 +55,23 @@ class TitleList(BaseModel):
 MAX_PREVIOUS_ENTRIES = 20
 
 
-class GuessCreate(BaseModel):
-    title_id: StrictInt | None = Field(description="The guessed title, or null to skip")
-    previous: list[StrictInt | None] = Field(
+# The earlier guesses of a guest, in order (null is a skip).
+Previous = Annotated[
+    list[StrictInt | None],
+    Field(
         max_length=MAX_PREVIOUS_ENTRIES,
         description="The earlier guesses in this game, in order (null is a skip)",
-    )
+    ),
+]
+
+
+class GuessCreate(BaseModel):
+    title_id: StrictInt | None = Field(description="The guessed title, or null to skip")
+    previous: Previous
+
+
+class ResumeCreate(BaseModel):
+    previous: Previous
 
 
 class HintRead(BaseModel):

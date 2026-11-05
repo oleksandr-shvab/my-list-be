@@ -3,6 +3,7 @@ from collections.abc import Collection, Sequence
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import set_local
 from app.games.normalize import normalize_text
 from app.models.title import Title, TitleKind
 
@@ -88,13 +89,7 @@ async def search_titles(db: AsyncSession, *, kind: str, normalized_query: str) -
     word similarity of the name and the franchise, then name (code point order) and id. The trigram operators and
     `starts_with` take no wildcards, and the text is a bound parameter, so the query is plain
     text (AC-22). The threshold is set for the current transaction only."""
-    await db.execute(
-        select(
-            func.set_config(
-                "pg_trgm.word_similarity_threshold", str(SEARCH_SIMILARITY_THRESHOLD), True
-            )
-        )
-    )
+    await set_local(db, "pg_trgm.word_similarity_threshold", str(SEARCH_SIMILARITY_THRESHOLD))
     # `%>`: the query is similar to some run of words in the column; the GIN index serves it.
     name_matches = Title.normalized_name.op("%>")(normalized_query)
     franchise_matches = Title.normalized_franchise.op("%>")(normalized_query)

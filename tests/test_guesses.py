@@ -10,13 +10,14 @@ from dataclasses import replace
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppException
 from app.crud.title import create_title
 from app.games import service
 from app.games.schemas import PuzzleView
+from app.models.progress import Progress
 from app.models.title import Title
 from tests.conftest import SetNow
 from tests.factories import create_game, create_puzzle
@@ -205,9 +206,10 @@ async def test__guest_guess__replay_and_new_guess_rules(
     assert [entry.name for entry in view.guesses] == [
         None if entry.title_id is None else names[entry.title_id] for entry in view.guesses
     ]
-    # AC-37: nothing is stored.
+    # AC-37: nothing is stored, and a guest never gets a progress row.
     assert not db_session.new
     assert not db_session.dirty
+    assert await db_session.scalar(select(func.count()).select_from(Progress)) == 0
 
 
 @pytest.mark.parametrize(
