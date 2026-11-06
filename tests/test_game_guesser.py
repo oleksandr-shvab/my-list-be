@@ -33,7 +33,6 @@ def _title(
     )
 
 
-# Key to title. The answer is "Half-Life 2" of the franchise "Half-Life".
 TITLES = {
     "answer": _title(1, "Half-Life 2", "Half-Life"),
     "same_name": _title(2, "HALF LIFE 2", None),  # A near-duplicate row: same normalized name.
@@ -45,10 +44,9 @@ TITLES = {
     "other_again": _title(10, "PORTAL  2", None),  # Same normalized name as "other" (Q9).
     "board_game": _title(8, "Catan", None, kind="board_game"),
 }
-# The same puzzle with an answer that has no franchise.
 ANSWER_WITHOUT_FRANCHISE = _title(9, "Pong", None)
-# A franchise that normalizes to nothing is stored as '' by a careless writer; it still must not
-# match (the crud layer stores NULL, so this guards the module on its own).
+# A franchise that normalizes to nothing and is stored as '' must not match. The crud layer stores
+# NULL, so this guards the module on its own.
 ANSWER_WITH_EMPTY_FRANCHISE = replace(
     _title(11, "Tetris", ""), franchise="", normalized_franchise=""
 )
@@ -76,8 +74,7 @@ def _title_of(key: str | None) -> TitleData | None:
 def _play(
     keys: list[str | None], *, puzzle: PuzzleData | None = None, state: ProgressState | None = None
 ) -> tuple[ProgressState, GuessResult]:
-    """Apply the guesses (a key, or None for a skip) in order; return the final state and the
-    last feedback."""
+    """Apply the guesses (None is a skip); return the final state and the last feedback."""
     module = GameGuesserModule()
     puzzle = puzzle or _puzzle()
     state = state or ProgressState()

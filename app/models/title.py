@@ -12,15 +12,14 @@ class TitleKind(StrEnum):
 
 
 class Title(Base):
-    """A title a puzzle can be about. The normalized columns are written only by
-    `app/crud/title.py`, through `app/games/normalize.py`."""
+    """The normalized columns are written only by `app/crud/title.py`, through
+    `app/games/normalize.py`."""
 
     __tablename__ = "titles"
     __table_args__ = (
         CheckConstraint(enum_check("kind", TitleKind), name="kind"),
         CheckConstraint("normalized_name <> ''", name="normalized_name_not_empty"),
-        # The title search (M1-11) filters with the trigram operators, which these indexes serve.
-        # `alembic check` does not compare the operator class, so the migration is checked by hand.
+        # `alembic check` does not compare the operator class, so check the migration by hand.
         Index(
             "ix_titles_normalized_name_trgm",
             "normalized_name",
@@ -41,8 +40,8 @@ class Title(Base):
     # Wider than the raw columns: NFKD can make a string longer.
     normalized_name: Mapped[str] = mapped_column(String(1024), nullable=False)
     franchise: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # A stored copy, not derived: the trigram index of M1-11 needs a real column, and the
-    # normalizer is Python Unicode code that SQL cannot repeat without `unaccent`.
+    # A stored copy: the trigram index needs a real column, and SQL cannot repeat the Python
+    # normalizer without `unaccent`.
     normalized_franchise: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

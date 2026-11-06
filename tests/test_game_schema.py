@@ -1,6 +1,6 @@
-"""Database constraints of the game tables, on real Postgres (AC-9, AC-10, AC-11, AC-13,
-AC-13b, AC-18). Each rejected row names the constraint it must hit, so a row that fails for
-another reason (a missing column, a foreign key) does not pass by accident."""
+"""Database constraints of the game tables on real Postgres (AC-9 to AC-11, AC-13, AC-13b, AC-18).
+Each rejected row names the constraint it must hit, so a row that fails for another reason does not
+pass."""
 
 import datetime as dt
 
@@ -19,7 +19,6 @@ PUZZLE_DATE = dt.date(2026, 11, 3)
 
 
 async def assert_rejected(db: AsyncSession, row: object, constraint: str) -> None:
-    """Flush `row` inside a savepoint and expect Postgres to refuse it on `constraint`."""
     with pytest.raises(IntegrityError, match=constraint):
         async with db.begin_nested():
             db.add(row)
@@ -79,9 +78,6 @@ async def puzzle(db_session: AsyncSession) -> Puzzle:
     )
 
 
-# games (AC-9)
-
-
 async def test__game__a_valid_row_is_accepted(db_session: AsyncSession) -> None:
     game = await create_game(db_session, slug="a1-b2-c3")
 
@@ -113,9 +109,6 @@ async def test__game_slug__duplicate_is_rejected(db_session: AsyncSession) -> No
     await assert_rejected(db_session, new_game(slug="game-guesser"), "uq_games_slug")
 
 
-# titles (AC-18)
-
-
 async def test__title__a_valid_row_is_accepted(db_session: AsyncSession) -> None:
     title = await create_title(db_session, name="Half-Life 2", franchise="Half-Life", year=2004)
 
@@ -127,9 +120,6 @@ async def test__title_kind__other_than_video_game_is_rejected(db_session: AsyncS
     title = Title(kind="movie", name="Alien", normalized_name="alien")
 
     await assert_rejected(db_session, title, "ck_titles_kind")
-
-
-# puzzles (AC-10, AC-11)
 
 
 async def test__puzzle__a_valid_row_is_accepted(puzzle: Puzzle) -> None:
@@ -190,9 +180,6 @@ async def test__delete_game__refused_while_it_has_puzzles(
     )
 
 
-# puzzle_clues (AC-13)
-
-
 async def test__puzzle_clue__six_valid_steps_are_accepted(
     db_session: AsyncSession, puzzle: Puzzle
 ) -> None:
@@ -242,9 +229,6 @@ async def test__puzzle_clue_hint__only_one_half_set_is_rejected(
     )
 
     await assert_rejected(db_session, clue, "ck_puzzle_clues_hint_pair")
-
-
-# clue_media_files (AC-13b)
 
 
 async def test__clue_media_file__valid_image_and_video_rows_are_accepted(
@@ -372,9 +356,6 @@ async def test__clue_media_file__poster_does_not_clash_with_a_webp_source(
         [new_media(clue.id, role="source"), new_media(clue.id, role="poster", key="b" * 64)]
     )
     await db_session.flush()
-
-
-# cascade (AC-13, AC-13b)
 
 
 async def test__delete_puzzle__removes_its_clues_and_their_media(

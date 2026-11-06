@@ -1,9 +1,7 @@
-"""The contract between the shared site and a game module (AC-2).
+"""The contract between the site and a game module (AC-2).
 
-The site owns routing, visibility, progress storage, stats, the archive and the clock. A module
-owns what a puzzle shows, what a guess is and how the game ends. The two sides exchange plain
-data (the dataclasses below) and the module does no database or network I/O (R-6), so a guest's
-replay and an account's stored state call the same code (AC-44).
+The module does no database or network I/O (R-6), so a guest's replay and an account's stored
+state call the same code (AC-44).
 """
 
 import datetime as dt
@@ -16,20 +14,19 @@ from app.games.schemas import PuzzleView
 
 
 class GuessError(Exception):
-    """A guess the module refuses. The module raises its own errors (it knows nothing of HTTP);
-    the service maps them to the API's codes."""
+    """The module knows nothing of HTTP; the service maps these to the API's codes."""
 
 
 class TitleAlreadyGuessedError(GuessError):
-    """The title was already guessed in this game (AC-31)."""
+    pass
 
 
 class TitleKindMismatchError(GuessError):
-    """The title is not of the game's title kind (AC-32)."""
+    pass
 
 
 class GameFinishedError(GuessError):
-    """The game is already won or lost (AC-33)."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -45,7 +42,7 @@ class TitleData:
 
 @dataclass(frozen=True)
 class MediaFileData:
-    """One stored file of a clue (the module sees the key, never a path or a bucket)."""
+    """The module sees the key, never a path or a bucket."""
 
     role: str
     key: str
@@ -70,8 +67,7 @@ class SignedLink:
     expires_at: dt.datetime
 
 
-# Makes the signed link of a file from its key and content type (R-6). The module calls it only
-# for the steps it shows, so a step that is not earned never gets a link (AC-71).
+# The module calls it only for the steps it shows, so an unearned step never gets a link (AC-71).
 MediaSigner = Callable[[str, str], SignedLink]
 
 
@@ -88,7 +84,7 @@ class PuzzleData:
 
 @dataclass(frozen=True)
 class GuessEntry:
-    """One stored guess. `title` is None for a skip."""
+    """`title` is None for a skip."""
 
     title: TitleData | None
     result: GuessResult
@@ -106,21 +102,18 @@ class ProgressState:
 class GameModule(Protocol):
     max_guesses: int
 
-    def has_variant(self, variant: str, *, default_variant: str) -> bool:
-        """Whether the game has this variant."""
-        ...
+    def has_variant(self, variant: str, *, default_variant: str) -> bool: ...
 
     def get_puzzle(
         self, puzzle: PuzzleData, state: ProgressState, *, is_signed_in: bool, sign: MediaSigner
     ) -> PuzzleView:
-        """The view the player may see now: never the answer or a clue not yet earned before the
-        game ends (AC-4). `sign` is called for the media of the shown steps only (AC-71)."""
+        """Never the answer or an unearned clue before the game ends (AC-4); `sign` is called for
+        the shown steps only (AC-71)."""
         ...
 
     def submit_guess(
         self, puzzle: PuzzleData, state: ProgressState, guess: TitleData | None
     ) -> tuple[ProgressState, GuessResult]:
-        """Apply a guess (`None` is a skip) and return the new state and the feedback. Raises
-        `GameFinishedError`, `TitleKindMismatchError` or `TitleAlreadyGuessedError`, in that order of
-        checking, and changes nothing."""
+        """`None` is a skip. Raises `GameFinishedError`, `TitleKindMismatchError` or
+        `TitleAlreadyGuessedError`, checked in that order, and changes nothing."""
         ...

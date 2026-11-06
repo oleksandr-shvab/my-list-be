@@ -13,16 +13,12 @@ from app.crud.clue_media import get_visible_media_file
 from app.media.signing import is_media_key, is_valid_link
 from app.media.storage import LocalMediaStorage
 
-# A Unix time in seconds has 10 digits for the next few centuries; the cap keeps `int()` away from
-# absurd input.
+# A Unix time has 10 digits for centuries; the cap keeps `int()` away from absurd input.
 MAX_EXPIRY_DIGITS = 12
 
 
 @dataclass(frozen=True)
 class MediaFile:
-    """A file the route may serve: the path, the stored content type, the file's stat result (for
-    the size and the headers) and the seconds the link still lives."""
-
     path: Path
     content_type: str
     stat_result: os.stat_result
@@ -44,10 +40,8 @@ async def open_media(
     signature: str,
     now: dt.datetime,
 ) -> MediaFile:
-    """Check a signed link and find its file. The checks run in this order: the key's shape, the
-    signature and the expiry (one `invalid_media_link` for all three, AC-73), then the visibility of
-    the puzzle the file belongs to (`puzzle_not_found`, R-19). The signature is checked on every
-    request, ranged or not (AC-72b)."""
+    """A bad key, signature or expiry is one `invalid_media_link` (AC-73), checked on every request,
+    ranged or not (AC-72b); then the puzzle's visibility (`puzzle_not_found`, R-19)."""
     expires_at = _parse_expiry(expires)
     now_seconds = int(now.timestamp())
     if (

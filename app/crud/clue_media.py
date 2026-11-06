@@ -10,9 +10,8 @@ from app.models.puzzle import ClueMediaFile, Puzzle, PuzzleClue
 async def get_visible_media_file(
     db: AsyncSession, *, key: str, today: dt.date
 ) -> ClueMediaFile | None:
-    """A file with this key that belongs to a visible puzzle (AC-12, R-19). The key is not unique
-    (a content hash can repeat across clues), so any visible file with it will do: the bytes are
-    the same, and the first by id is taken so the answer does not change between requests."""
+    """The key is not unique (a content hash can repeat across clues) but the bytes are the same;
+    take the first by id so the answer is stable (AC-12, R-19)."""
     result = await db.execute(
         select(ClueMediaFile)
         .join(PuzzleClue, ClueMediaFile.clue_id == PuzzleClue.id)

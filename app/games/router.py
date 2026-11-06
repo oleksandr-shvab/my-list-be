@@ -22,13 +22,12 @@ from app.games.schemas import (
 
 router = APIRouter()
 
-# `public` only for data that is the same for everyone. Every puzzle response depends on the
-# caller and on the time of day, and carries clues that are earned, so it is never stored (AC-77).
+# `public` only for data that is the same for everyone. A puzzle response depends on the caller
+# and the time of day, and carries earned clues, so it is never stored (AC-77).
 PUBLIC_CACHE = "public, max-age=300"
 PRIVATE_NO_STORE = "private, no-store"
 
-# `game_not_found`, `variant_not_found` or `puzzle_not_found`. A hidden puzzle gives the same body
-# as a missing one (AC-17).
+# A hidden puzzle gives the same body as a missing one (AC-17).
 PUZZLE_NOT_FOUND: dict[int | str, dict[str, Any]] = {
     404: {
         "model": ProblemDetails,
@@ -36,7 +35,6 @@ PUZZLE_NOT_FOUND: dict[int | str, dict[str, Any]] = {
     }
 }
 
-# The guess route's own errors, on top of the 404s and the validation error.
 GUESS_ERRORS: dict[int | str, dict[str, Any]] = {
     **PUZZLE_NOT_FOUND,
     409: {
@@ -59,7 +57,6 @@ GUESS_ERRORS: dict[int | str, dict[str, Any]] = {
     },
 }
 
-# The resume route's own errors: the guess route's, minus what only a new guess can hit.
 RESUME_ERRORS: dict[int | str, dict[str, Any]] = {
     **PUZZLE_NOT_FOUND,
     422: {
@@ -86,7 +83,6 @@ GAME_NOT_FOUND: dict[int | str, dict[str, Any]] = {
     404: {"model": ProblemDetails, "description": "Game not found (`game_not_found`)"}
 }
 
-# The stats route needs an account, and checks the game and the variant only.
 STATS_ERRORS: dict[int | str, dict[str, Any]] = {
     401: {"model": ProblemDetails, "description": "No valid session (`not_authenticated`)"},
     404: {
@@ -95,8 +91,7 @@ STATS_ERRORS: dict[int | str, dict[str, Any]] = {
     },
 }
 
-# The merge route needs an account, checks the game, and refuses a whole request only for the
-# game, the body or a busy lock: a bad entry is reported in the 200 response instead.
+# A bad entry is reported in the 200 response, not as an error.
 MERGE_ERRORS: dict[int | str, dict[str, Any]] = {
     401: {"model": ProblemDetails, "description": "No valid session (`not_authenticated`)"},
     404: {"model": ProblemDetails, "description": "Game not found (`game_not_found`)"},

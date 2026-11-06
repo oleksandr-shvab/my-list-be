@@ -98,10 +98,8 @@ async def list_archive(
     now: dt.datetime,
     user: User | None,
 ) -> ArchiveList:
-    """One page of past puzzles, newest first (AC-63 to AC-65). The checks run in the order game,
-    variant. `before` defaults to today and is clamped to it, so neither today nor a future day
-    can be listed; there is no `puzzle_not_found` here, because a missing day is just left out.
-    An account sees its stored status and guess count, a guest gets nulls."""
+    """`before` is clamped to today, so neither today nor a future day is listed. A missing day is
+    left out, with no `puzzle_not_found` (AC-63 to AC-65)."""
     game, module = await _resolve_game(db, slug)
     variant = _resolve_variant(game, module, variant)
 
@@ -124,7 +122,7 @@ async def list_archive(
 
 
 def _puzzle_number(puzzle_date: dt.date, game: Game) -> int:
-    """Days since the game's launch date, plus 1 (Q16): the number of the view and of the archive."""
+    """Day 1 is the launch date (decision Q16)."""
     return (puzzle_date - game.launch_date).days + 1
 
 
@@ -153,9 +151,7 @@ async def get_puzzle_view(
     user: User | None,
     storage: MediaStorage,
 ) -> PuzzleView:
-    """The view of one puzzle: the account's stored game when there is one, else an empty one. The
-    checks run in the order game, variant, puzzle, so a hidden puzzle never shows more than
-    `puzzle_not_found` (AC-17). Nothing is created or changed."""
+    """Creates nothing. A hidden puzzle never shows more than `puzzle_not_found` (AC-17)."""
     module, puzzle, puzzle_id = await _load_puzzle(
         db, slug=slug, variant=variant, puzzle_date=puzzle_date, now=now
     )
@@ -174,10 +170,8 @@ async def resume_puzzle(
     storage: MediaStorage,
     previous: list[int | None],
 ) -> PuzzleView:
-    """The view after a reload, with nothing changed (AC-38). An account gets its stored game and
-    `previous` is ignored (AC-41). A guest gets `previous` replayed: up to `max_guesses` entries,
-    because a whole lost game may be sent here, and a replay that ends the game gives the finished
-    view (AC-39)."""
+    """Changes nothing (AC-38). `previous` is ignored for an account (AC-41). For a guest it may
+    hold up to `max_guesses` entries, because a whole lost game can be sent here (AC-39)."""
     module, puzzle, puzzle_id = await _load_puzzle(
         db, slug=slug, variant=variant, puzzle_date=puzzle_date, now=now
     )
@@ -203,10 +197,8 @@ async def submit_guess(
     title_id: int | None,
     previous: list[int | None],
 ) -> PuzzleView:
-    """Guess on a puzzle. An account's guess is stored (`_submit_account_guess`) and `previous` is
-    ignored (AC-41); a guest's is not (`_submit_guest_guess`). Both run the module's own
-    `submit_guess`, so the same guesses give the same view (AC-44). The checks run in the order
-    game, variant, puzzle, history (guest only), finished, title, then the duplicate rule."""
+    """Both flows run the module's own `submit_guess`, so the same guesses give the same view
+    (AC-44). `previous` is ignored for an account (AC-41)."""
     module, puzzle, puzzle_id = await _load_puzzle(
         db, slug=slug, variant=variant, puzzle_date=puzzle_date, now=now
     )
@@ -242,10 +234,9 @@ async def _submit_guest_guess(
     title_id: int | None,
     previous: list[int | None],
 ) -> PuzzleView:
-    """Rebuild the state by replaying `previous`, then apply the new guess. Nothing is stored
-    (AC-37)."""
-    # More earlier guesses than the game has guesses before the last one cannot be a real game
-    # (AC-39). Checked first, so a long list is never replayed.
+    """Stores nothing (AC-37)."""
+    # A real game has at most `max_guesses - 1` earlier guesses (AC-39). Checked first, so a long
+    # list is never replayed.
     if len(previous) >= module.max_guesses:
         raise InvalidGuessHistoryError()
 
@@ -275,14 +266,9 @@ async def _submit_account_guess(
     storage: MediaStorage,
     title_id: int | None,
 ) -> PuzzleView:
-    """Store the guess on the account's game (AC-36, AC-45). The game row is locked until the
-    commit, so two requests for it run one after the other and the guess list never loses or
-    repeats a guess. The checks are the guest's, minus the history that does not exist here.
-
-    Everything from the lock to the commit is one unit: the view is built before the commit, and
-    any error rolls the transaction back, so a refused guess (or a puzzle that cannot be shown)
-    stores nothing and leaves neither the lock nor a new empty game behind. A lock timeout
-    anywhere in the unit (the lock, the guess insert, the commit) is 503, and a retry is safe."""
+    """The game row is locked until the commit, so two requests for it run one after the other
+    (AC-45). The view is built before the commit and any error rolls back, so a refused guess or a
+    puzzle that cannot be shown stores nothing and leaves no lock or empty game behind."""
     titles = await _load_titles(db, puzzle, [title_id])
     guess = None if title_id is None else titles.get(title_id)
     is_unknown_title = title_id is not None and guess is None
@@ -298,7 +284,7 @@ async def _submit_account_guess(
                 user_id=user.id,
                 puzzle_id=puzzle_id,
                 now=now,
-                # The server's clock at this first guess against the puzzle's date (AC-36).
+                # The first guess decides it (AC-36).
                 counts_for_streak=utc_today(now) == puzzle.date,
             )
         state = _state_from_progress(module, puzzle, progress)
@@ -315,12 +301,10 @@ async def _submit_account_guess(
 
 @asynccontextmanager
 async def _locked_unit(db: AsyncSession, *, operation: str) -> AsyncIterator[None]:
-    """A unit of work that takes row locks and writes: it limits the lock wait, commits when the
-    block ends without an error, and on any error rolls back and re-raises that error. A failing
-    rollback is logged and never replaces it. A lock timeout or a deadlock anywhere in the unit
-    (a lock, an insert, the commit) is 503: nothing was stored, and a retry is safe. After a
-    rollback the session's ORM objects are expired, so nothing reads them again in the request.
-    `operation` names the unit in the log."""
+    """Limits the lock wait, commits at the end, and on any error rolls back and re-raises it. A
+    lock timeout or deadlock is 503 with nothing stored. After a rollback the session's ORM
+    objects are expired, so nothing reads them again in the request. `operation` names the unit in
+    the log."""
     try:
         await limit_lock_wait(db)
         yield
@@ -336,8 +320,8 @@ async def _locked_unit(db: AsyncSession, *, operation: str) -> AsyncIterator[Non
 
 
 async def _rollback_keeping_the_error(db: AsyncSession, operation: str) -> None:
-    """Roll back, and never let a failing rollback replace the error being handled: the caller
-    re-raises the original. The connection is broken then, and closing the session discards it."""
+    """A failing rollback must not replace the error being handled; the broken connection is
+    discarded when the session closes."""
     try:
         await db.rollback()
     except Exception:
@@ -353,14 +337,13 @@ def _view(
     now: dt.datetime,
     storage: MediaStorage,
 ) -> PuzzleView:
-    """The module's view, plus the daily proof for a guest on the puzzle's own day (Q2): the
-    module knows nothing of proofs or the clock. An account and any other day get `null`."""
+    """Adds the daily proof for a guest on the puzzle's own day (Q2); the module knows nothing of
+    proofs or the clock."""
     view = module.get_puzzle(
         puzzle, state, is_signed_in=is_signed_in, sign=_media_signer(storage, now)
     )
     if is_signed_in or utc_today(now) != puzzle.date:
         return view
-    # A validated assignment on a view this call just built (`GameViewBase`).
     view.daily_proof = daily_proof.sign(puzzle.slug, puzzle.variant, puzzle.date)
     return view
 
@@ -381,8 +364,6 @@ def _apply_guess(
 async def _load_titles(
     db: AsyncSession, puzzle: PuzzleData, ids: list[int | None]
 ) -> dict[int, TitleData]:
-    """The titles of the puzzle's kind among `ids` (skips ignored), in one query. An id that is
-    missing, of another kind or too large for a key is not in the result."""
     return await _load_titles_of_kind(db, TitleKind(puzzle.title_kind), ids)
 
 
@@ -401,8 +382,8 @@ def _replay_previous(
     previous: list[int | None],
     titles: dict[int, TitleData],
 ) -> ProgressState:
-    """The state a guest's `previous` leads to. Any entry a real client never sends (an unknown
-    title, a duplicate, an entry after the end) is `invalid_guess_history` (AC-39)."""
+    """An entry a real client never sends (unknown title, duplicate, entry after the end) is
+    `invalid_guess_history` (AC-39)."""
     state = ProgressState()
     for earlier_id in previous:
         earlier = None if earlier_id is None else titles.get(earlier_id)
@@ -418,7 +399,6 @@ def _replay_previous(
 async def _stored_state(
     db: AsyncSession, module: GameModule, puzzle: PuzzleData, puzzle_id: int, user: User | None
 ) -> ProgressState:
-    """The account's stored state; an empty one for a guest or an account with no row."""
     if user is None:
         return ProgressState()
     progress = await get_progress(db, user_id=user.id, puzzle_id=puzzle_id)
@@ -430,9 +410,8 @@ async def _stored_state(
 def _state_from_progress(
     module: GameModule, puzzle: PuzzleData, progress: Progress
 ) -> ProgressState:
-    """Rebuild the state from the stored guesses through the module's own rules, so the results,
-    the status and the earned steps come from one place (AC-44). The stored `counts_for_streak`
-    is the one the first guess set (AC-36)."""
+    """Replays through the module's own rules, so results, status and earned steps come from one
+    place (AC-44)."""
     state = ProgressState(counts_for_streak=progress.counts_for_streak)
     for stored in progress.guesses:
         title = None if stored.title is None else _title_data(stored.title)
@@ -447,8 +426,6 @@ def _state_from_progress(
 
 
 def _media_signer(storage: MediaStorage, now: dt.datetime) -> MediaSigner:
-    """The signer a game module calls for the files of the steps it shows (R-6)."""
-
     def sign(key: str, content_type: str) -> SignedLink:
         url, expires_at = storage.signed_url(key, content_type, now)
         return SignedLink(url=url, expires_at=expires_at)
@@ -464,8 +441,7 @@ async def _load_puzzle(
     puzzle_date: dt.date,
     now: dt.datetime,
 ) -> tuple[GameModule, PuzzleData, int]:
-    """The game's module, the visible puzzle as plain data, and its id (which never leaves the
-    server, AC-5)."""
+    """The puzzle id never leaves the server (AC-5)."""
     game, module = await _resolve_game(db, slug)
     variant = _resolve_variant(game, module, variant)
     puzzle_data, puzzle_id = await _find_puzzle(
@@ -477,7 +453,6 @@ async def _load_puzzle(
 async def _find_puzzle(
     db: AsyncSession, game: Game, *, variant: str, puzzle_date: dt.date, now: dt.datetime
 ) -> tuple[PuzzleData, int]:
-    """The visible puzzle of a game and variant already resolved, as plain data, and its id."""
     puzzle = await get_visible_puzzle_with_details(
         db,
         game_id=game.id,
@@ -506,8 +481,6 @@ def _puzzle_data(game: Game, puzzle: Puzzle, *, clues: tuple[ClueData, ...]) -> 
 
 @dataclass(frozen=True)
 class _ReadyEntry:
-    """An entry that passed every check and waits to be stored."""
-
     entry: MergeEntry
     puzzle_id: int
     status: ProgressStatus
@@ -521,28 +494,20 @@ async def merge_progress(
     user: User,
     entries: list[MergeEntry],
 ) -> MergeRead:
-    """Move a guest's local games into the account (AC-55 to AC-61). Each entry is replayed through
-    the module's own `submit_guess`, so the status comes from the rules and never from the client
-    (AC-56). An entry that names an unknown variant, a puzzle that is not visible, or guesses that
-    are not a game is skipped and reported, and the others still merge (AC-59). A game the account
-    already has is never changed (AC-58), so the same request twice changes nothing (AC-61).
+    """The status comes from replaying the guesses through the module, never from the client
+    (AC-56). A bad entry is skipped and reported, and the others still merge (AC-59). A game the
+    account already has is never changed (AC-58), so a repeat changes nothing (AC-61).
 
-    The game is checked first (`game_not_found` for the whole request). The checks of one entry run
-    in this order:
-    1. the guess count, 1 to `max_guesses`, and the variant: no database yet;
-    2. the visible puzzle (`puzzle_not_found`);
-    3. whether the account already has a game on it: then the entry is `already_present` and is
-       never replayed, valid or not. A replay that answers "valid" or "invalid" for a puzzle the
-       account has not finished would tell a client the answer, with no guess used (AC-58);
-    4. the replay of the guesses (`invalid_guess_history`).
-    `played_as_daily` counts for the streak only with the `daily_proof` of that puzzle (Q2); a claim
-    without a valid proof is stored as an archive play and counted in `daily_unproven`.
+    Per-entry checks, in order: guess count and variant (no database yet); the visible puzzle;
+    whether the account already has a game on it, in which case the entry is `already_present`
+    and never replayed, valid or not, since a replay would tell a client the answer with no guess
+    used (AC-58); the replay. `played_as_daily` counts for the streak only with the puzzle's
+    `daily_proof` (Q2); without one the game is stored as an archive play and counted in
+    `daily_unproven`.
 
-    The puzzles come in one query, the titles in one, the owned puzzles in one. Entries are stored
-    sorted by `(variant, date)` whatever the request's order, so two overlapping merges take their
-    row locks in the same order and cannot deadlock. All entries share one transaction and one
-    commit: an unexpected error stores nothing, and a lock timeout or deadlock is 503 with nothing
-    stored, so the request can be sent again."""
+    Entries are stored sorted by `(variant, date)`, so two overlapping merges take their row locks
+    in the same order and cannot deadlock. All entries share one transaction: an error stores
+    nothing, and a lock timeout or deadlock is 503, so the request can be sent again."""
     game, module = await _resolve_game(db, slug)
     rejections: dict[int, MergeRejectionCode] = {}
     candidates: list[int] = []
@@ -582,8 +547,8 @@ async def merge_progress(
             else:
                 replayable.append(index)
 
-        # One query for every title of every entry that is replayed: an id that is not a title of
-        # the game's kind is not in the result, so an entry that uses it is invalid.
+        # An id that is not a title of the game's kind is not in the result, so an entry that
+        # uses it is invalid.
         titles = await _load_titles_of_kind(
             db,
             TitleKind(game.title_kind),
@@ -604,10 +569,9 @@ async def merge_progress(
                 continue
             ready.append(_ReadyEntry(entry=entry, puzzle_id=puzzle.id, status=state.status))
 
-        # A game the account began after the owned read above (a guess in another tab) must not
-        # be reported as a rejection, and its replay must not answer for it: an entry that failed
-        # the replay on a puzzle the account owns now is `already_present` (AC-58). Read before
-        # this request stores anything, so its own entries are never mistaken for the account's.
+        # A game begun after the owned read above (a guess in another tab) makes a failed replay
+        # `already_present`, not a rejection (AC-58). Read before this request stores anything, so
+        # its own entries are never mistaken for the account's.
         owned_now = await list_owned_puzzle_ids(
             db,
             user_id=user.id,
@@ -658,9 +622,8 @@ async def merge_progress(
 async def get_stats(
     db: AsyncSession, *, slug: str, variant: str | None, now: dt.datetime, user: User
 ) -> StatsRead:
-    """The account's stats in one variant, computed from the stored games on every read (AC-53).
-    The checks run in the order game, variant. The streak fields are None for a variant other than
-    the game's default (AC-51)."""
+    """Computed from the stored games on every read (AC-53). The streak fields are None for a
+    variant other than the default (AC-51)."""
     game, module = await _resolve_game(db, slug)
     variant = _resolve_variant(game, module, variant)
     today = utc_today(now)
@@ -700,10 +663,9 @@ async def get_stats(
 
 
 def search_query(query: str) -> str | None:
-    """The normalized text to search for, or None when the search must return an empty list: a
-    trimmed `query` under `MIN_QUERY_LENGTH` characters, or a normalized text under it ("a.", "a-"
-    and a decomposed "é" all become one letter), which would match most of the catalogue (AC-20).
-    The one place that rule lives; the benchmark uses it too."""
+    """None means an empty list: a query under `MIN_QUERY_LENGTH` characters, before or after
+    normalizing ("a.", "a-" and a decomposed "é" become one letter), would match most of the
+    catalogue (AC-20). The benchmark uses this too."""
     trimmed = query.strip()
     normalized = normalize_text(trimmed)
     if len(trimmed) < MIN_QUERY_LENGTH or len(normalized) < MIN_QUERY_LENGTH:
@@ -712,8 +674,7 @@ def search_query(query: str) -> str | None:
 
 
 async def search_titles(db: AsyncSession, *, slug: str, query: str) -> TitleList:
-    """Titles of the game's kind that fuzzy-match `query` on the name or the franchise. The game
-    is checked first, so an unknown slug is a 404 whatever `q` is."""
+    """The game is checked first, so an unknown slug is a 404 whatever `q` is."""
     game, _ = await _resolve_game(db, slug)
     normalized = search_query(query)
     if normalized is None:
@@ -735,8 +696,6 @@ async def _resolve_game(db: AsyncSession, slug: str) -> tuple[Game, GameModule]:
 
 
 def _resolve_variant(game: Game, module: GameModule, variant: str | None) -> str:
-    """The variant a request means: the game's default when none is given, else the one asked for
-    if the game has it (`variant_not_found` if not)."""
     variant = variant if variant is not None else game.default_variant
     if not module.has_variant(variant, default_variant=game.default_variant):
         raise VariantNotFoundError()

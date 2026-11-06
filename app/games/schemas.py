@@ -14,8 +14,8 @@ DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 
 
 def _strict_date(value: Any) -> dt.date:
-    """Only a real `YYYY-MM-DD` day. Pydantic's lax `date` also reads an integer as a Unix
-    timestamp and `date.fromisoformat` accepts `20261102`, so the shape is checked first (R-13)."""
+    """Pydantic's lax `date` reads an integer as a Unix timestamp and `date.fromisoformat` accepts
+    `20261102`, so the shape is checked first (R-13)."""
     if not isinstance(value, str) or not DATE_PATTERN.fullmatch(value):
         raise ValueError(f"Expected a date as {DATE_FORMAT}")
     return dt.date.fromisoformat(value)
@@ -27,10 +27,9 @@ WHOLE_NUMBER_PATTERN = re.compile(r"-?\d+", re.ASCII)
 
 
 def _whole_number(value: Any) -> Any:
-    """A query integer written as plain digits (a leading minus is allowed, so `-1` is `too_small`,
-    not `invalid_type`). Pydantic's lax `int` also reads `1_0`, `+5`, ` 7 `, `100.0` and `1e2`. The
-    error type is `int_type`, so the answer is `invalid_type` like any other non-integer. A string
-    of more than 4300 digits passes here and fails in pydantic as `int_parsing_size`."""
+    """Pydantic's lax `int` also reads `1_0`, `+5`, ` 7 `, `100.0` and `1e2`. A leading minus
+    passes, so `-1` is `too_small`. More than 4300 digits passes here and fails in pydantic as
+    `int_parsing_size`."""
     if isinstance(value, str) and not WHOLE_NUMBER_PATTERN.fullmatch(value):
         raise PydanticCustomError("int_type", "Expected a whole number")
     return value
@@ -90,7 +89,6 @@ class ArchiveList(BaseModel):
 MAX_PREVIOUS_ENTRIES = 20
 
 
-# The earlier guesses of a guest, in order (null is a skip).
 Previous = Annotated[
     list[StrictInt | None],
     Field(
@@ -117,7 +115,7 @@ MAX_MERGE_ENTRIES = 500
 # (which repeats each variant) small.
 MAX_VARIANT_LENGTH = 32
 
-# A proof is 43 characters (an unpadded SHA-256 in base64url); the cap only keeps a body small.
+# A proof is 43 characters; the cap only keeps a body small.
 MAX_DAILY_PROOF_LENGTH = 100
 
 
@@ -221,10 +219,9 @@ class AnswerRead(BaseModel):
 
 
 class GameViewBase(BaseModel):
-    """What every game's puzzle view has, whatever the game. The service owns these fields, not
-    the game module (the module knows nothing of proofs or the clock), so each defaults here and a
-    new module cannot forget them. Assignment is validated, and the config keeps a defaulted field
-    required in the OpenAPI response schema (always present, maybe null)."""
+    """The service owns these fields, not the game module, so each defaults here and a new module
+    cannot forget them. The config keeps a defaulted field required in the OpenAPI response
+    schema."""
 
     model_config = ConfigDict(
         validate_assignment=True, json_schema_serialization_defaults_required=True

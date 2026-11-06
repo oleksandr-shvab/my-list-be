@@ -13,8 +13,8 @@ class RequestIdFilter(logging.Filter):
 
 
 def configure_logging() -> None:
-    """Plain text to stdout for now, with the request id on every line. Never log request
-    bodies, cookies, reset tokens or email addresses outside local development."""
+    """Never log request bodies, cookies, reset tokens or email addresses outside local
+    development."""
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
     handler.addFilter(RequestIdFilter())

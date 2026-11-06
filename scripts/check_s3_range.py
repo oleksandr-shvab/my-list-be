@@ -28,7 +28,6 @@ CONTENT_TYPE = "video/mp4"
 
 
 def ranged_get(url: str, range_header: str) -> tuple[int, str | None]:
-    """The status and `Content-Range` of a GET with `range_header`."""
     request = urllib.request.Request(url, headers={"Range": range_header})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:

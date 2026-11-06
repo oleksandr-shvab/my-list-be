@@ -2,19 +2,16 @@
 
     ENVIRONMENT=local uv run python scripts/seed_dev.py
 
-Safe to run again (daily, or after each PR): the dates are relative to today, the game's puzzles
-are deleted and recreated, and the seed titles are updated to match the lists below. It refuses
-to run unless the ENVIRONMENT variable is exactly `local` and DATABASE_URL points at this machine.
+Safe to run again: the dates are relative to today, the game's puzzles are deleted and recreated,
+and the seed titles are updated to match the lists below. It refuses to run unless ENVIRONMENT is
+exactly `local` and DATABASE_URL points at this machine.
 
-It creates the enabled game `game-guesser`, 12 titles with full names (some with franchises, and
-"Doom" and "DOOM" as a pair of near-duplicates), scheduled puzzles for today and the 3 previous
-days, one scheduled puzzle for tomorrow and one draft. Every puzzle has 6 clues. Step 1 has no
-hint, and one puzzle also has no Metacritic hint (step 2), so null hints can be seen in play.
+It creates the enabled game `game-guesser`, 12 titles ("Doom" and "DOOM" are near-duplicates) and
+puzzles with 6 clues each: scheduled for today, the 3 previous days and tomorrow, plus one draft.
 
-The clue media are the placeholder files in `scripts/seed_media/` (made by us, see its README): an
-image for steps 1 to 5, and for step 6 the clip and its poster. The script copies them into
-MEDIA_LOCAL_DIR under their SHA-256 (the media key, AC-74) and gives every clue its file rows. It
-refuses to run when MEDIA_STORAGE is not `local`, because it writes to that folder.
+The clue media are the placeholder files in `scripts/seed_media/` (see its README). The script
+copies them into MEDIA_LOCAL_DIR under their SHA-256 (the media key, AC-74), so it refuses to run
+when MEDIA_STORAGE is not `local`.
 """
 
 import asyncio
@@ -50,7 +47,6 @@ LAUNCH_DAYS_AGO = 3
 SOURCE_URL = "https://example.com/seed/source"
 
 SEED_MEDIA_DIR = ROOT / "scripts" / "seed_media"
-# The file of each step: an image for steps 1 to 5, the clip (with its poster) for step 6.
 STEP_IMAGES = ["step-1.webp", "step-2.webp", "step-3.webp", "step-4.webp", "step-5.webp"]
 CLIP = "clip.mp4"
 POSTER = "poster.webp"
@@ -94,7 +90,6 @@ class SeedPuzzle:
 PUZZLES = [
     SeedPuzzle(0, PuzzleStatus.SCHEDULED, "Half-Life 2"),
     SeedPuzzle(-1, PuzzleStatus.SCHEDULED, "The Legend of Zelda: Breath of the Wild"),
-    # The one puzzle with no Metacritic score: its step 2 has a null hint.
     SeedPuzzle(-2, PuzzleStatus.SCHEDULED, "Portal 2", has_metacritic_hint=False),
     SeedPuzzle(-3, PuzzleStatus.SCHEDULED, "Hades"),
     SeedPuzzle(1, PuzzleStatus.SCHEDULED, "Celeste"),
@@ -115,8 +110,6 @@ def _hint_value(kind: str | None, title: SeedTitle) -> str | None:
 
 @dataclass(frozen=True)
 class StoredMedia:
-    """A seed file copied into the media folder under its key."""
-
     key: str
     content_type: str
     byte_size: int
@@ -126,8 +119,8 @@ class StoredMedia:
 
 
 def store_media(media_dir: Path) -> dict[str, StoredMedia]:
-    """Copy the seed files into `media_dir`, each named by its SHA-256 (the media key), and return
-    them by file name. The byte size is that of the file; the rest comes from the manifest."""
+    """Copy the seed files into `media_dir` named by their SHA-256 (the media key); return them by
+    file name."""
     manifest = json.loads((SEED_MEDIA_DIR / "manifest.json").read_text())
     media_dir.mkdir(parents=True, exist_ok=True)
     stored: dict[str, StoredMedia] = {}
@@ -160,8 +153,7 @@ def _media_row(clue_id: int, role: ClueRole, file: StoredMedia) -> ClueMediaFile
 
 
 async def seed(db: AsyncSession, today: dt.date, *, media_dir: Path) -> None:
-    """Create or reset the seed data and copy the media files into `media_dir`. The caller
-    commits."""
+    """Create or reset the seed data and copy the media files. The caller commits."""
     media = store_media(media_dir)
     game = (await db.execute(select(Game).where(Game.slug == GAME_SLUG))).scalar_one_or_none()
     if game is None:
@@ -172,7 +164,6 @@ async def seed(db: AsyncSession, today: dt.date, *, media_dir: Path) -> None:
     game.is_enabled = True
     await db.flush()
 
-    # Clues go with their puzzle (ON DELETE CASCADE).
     await db.execute(delete(Puzzle).where(Puzzle.game_id == game.id))
 
     titles: dict[str, Title] = {}
@@ -217,7 +208,6 @@ async def seed(db: AsyncSession, today: dt.date, *, media_dir: Path) -> None:
                     source_url=SOURCE_URL,
                 )
             )
-        # One flush gives all six clues their ids; the media rows need them.
         db.add_all(clues)
         await db.flush()
         for clue in clues:

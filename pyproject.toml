@@ -26,7 +26,6 @@ dev = [
 ]
 
 [tool.uv]
-# An application, not a library: nothing to build or install as a package.
 package = false
 
 [tool.ruff]

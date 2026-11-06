@@ -220,7 +220,7 @@ def test__counters__bad_win_follows_the_flag_and_status_rules_of_any_win() -> No
     stats = stats_of(plays, day(3))
 
     assert (stats.played, stats.wins) == (2, 1)
-    assert (stats.current_streak, stats.max_streak) == (1, 1)  # Only the lost day 2.
+    assert (stats.current_streak, stats.max_streak) == (1, 1)
     assert stats.unbucketed_wins == (plays[0],)
 
 

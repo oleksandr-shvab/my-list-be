@@ -17,7 +17,7 @@ concurrency:
 env:
   PYTHON_VERSION: "3.12"
   UV_VERSION: "0.13.6"
-  # Settings the app reads. These are throwaway values for CI services, not real secrets.
+  # Throwaway values for the CI services, not real secrets.
   ENVIRONMENT: test
   DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/daily_game_challenge
   TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/daily_game_challenge_test
@@ -122,10 +122,10 @@ jobs:
             git show origin/main:openapi/openapi.json > "$GITHUB_WORKSPACE/base-openapi.json"
             echo "exists=true" >> "$GITHUB_OUTPUT"
           fi
-      # The action runs in a container that sees only the workspace, so the base file lives there
-      # (the runner's temp folder is not visible to it).
-      # A deliberate breaking change needs the "breaking-change" label on the pull request, and the
-      # matching frontend change must be merged with it.
+      # The action's container sees only the workspace, not the runner's temp folder, so the base
+      # file lives there.
+      # A deliberate breaking change needs the "breaking-change" label, and the matching frontend
+      # change must be merged with it.
       - name: No breaking changes against main
         if: steps.base.outputs.exists == 'true' && !contains(github.event.pull_request.labels.*.name, 'breaking-change')
         uses: oasdiff/oasdiff-action/breaking@9ce3a29eb0e6478dd0140932a678c7fb59d08f22 # v0.1.20

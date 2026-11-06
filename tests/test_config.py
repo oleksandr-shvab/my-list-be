@@ -40,7 +40,7 @@ def test__production_settings__a_clean_media_base_url_boots(base_url: str) -> No
 @pytest.mark.parametrize(
     ("base_url", "expected"),
     [
-        ("http://localhost:5173/api", True),  # The dev default.
+        ("http://localhost:5173/api", True),
         ("https://example.com", True),
         ("https://example.com/", True),
         ("https://example.com/api", True),
@@ -62,7 +62,6 @@ def test__production_settings__a_clean_media_base_url_boots(base_url: str) -> No
         ("ftp://example.com/api", False),
         ("example.com/api", False),
         ("", False),
-        # The host: a name, an IPv4 address or a bracketed IPv6 address, and nothing else.
         ("http://127.0.0.1:8000", True),
         ("http://[::1]:8000/api", True),
         ("http://my-host.example.com:8443/api", True),
@@ -120,14 +119,13 @@ def test__media_local_path__a_relative_dir_is_read_from_the_repo_root_not_the_cw
     absolute = Settings(**{**DEPLOYED, "ENVIRONMENT": "local", "MEDIA_LOCAL_DIR": str(tmp_path)})  # type: ignore[arg-type]
 
     assert relative.media_local_path == PROJECT_ROOT / "var" / "media"
-    assert (PROJECT_ROOT / "pyproject.toml").is_file()  # The root is the backend repo's.
+    assert (PROJECT_ROOT / "pyproject.toml").is_file()
     assert absolute.media_local_path == tmp_path
 
 
 @pytest.mark.parametrize(
     "override",
     [
-        # The scheme is compared without regard to letter case (urls are case-insensitive there).
         {"FRONTEND_URL": "HTTPS://example.com"},
         {"MEDIA_LOCAL_BASE_URL": "HTTPS://example.com/api"},
         {**S3, "S3_ENDPOINT_URL": "HTTPS://fsn1.your-objectstorage.com"},
@@ -191,7 +189,6 @@ def test__production_settings__safe_values_boot() -> None:
         {"MEDIA_LOCAL_BASE_URL": "https://example.com/../api"},
         # S3 links in a deployed environment use https.
         {**S3, "S3_ENDPOINT_URL": "http://fsn1.your-objectstorage.com"},
-        # S3 needs every value.
         {**S3, "S3_BUCKET": None},
         {**S3, "S3_SECRET_ACCESS_KEY": None},
         {**S3, "S3_ENDPOINT_URL": None},

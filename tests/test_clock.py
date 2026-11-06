@@ -26,7 +26,6 @@ def test__utc_today__turns_over_one_second_after_23_59_59() -> None:
 
 
 def test__utc_today__converts_another_timezone_to_the_utc_date() -> None:
-    # 01:30 on 4 November at UTC+2 is 23:30 on 3 November in UTC.
     other_zone = dt.datetime(2026, 11, 4, 1, 30, tzinfo=dt.timezone(dt.timedelta(hours=2)))
 
     assert utc_today(other_zone) == dt.date(2026, 11, 3)

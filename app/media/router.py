@@ -1,9 +1,7 @@
-"""The local media route: the backend serves a signed link itself (AC-72, AC-72b).
+"""The local media route (AC-72, AC-72b).
 
-Used with `MEDIA_STORAGE=local` (development, tests and the AC-72c fallback). With `s3` the links
-point at the bucket and this route answers `invalid_media_link` to everything. Left out of the
-OpenAPI document (R-17): the frontend takes links from the puzzle view and never calls it through
-the generated client.
+With `MEDIA_STORAGE=s3` it answers `invalid_media_link` to everything. It stays out of OpenAPI
+(R-17): the frontend takes links from the puzzle view.
 """
 
 from fastapi import APIRouter, Request
@@ -23,8 +21,8 @@ NOSNIFF = {"X-Content-Type-Options": "nosniff"}
 
 
 class WholeFileResponse(FileResponse):
-    """A `FileResponse` that ignores `Range` and `If-Range`: several ranges get the whole file
-    (R-18), because Starlette would answer them with `multipart/byteranges`."""
+    """Ignores `Range` and `If-Range`: several ranges get the whole file (R-18), where Starlette
+    would send `multipart/byteranges`."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         headers = [

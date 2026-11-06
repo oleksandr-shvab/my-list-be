@@ -53,8 +53,8 @@ class Puzzle(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    # `lazy="raise"`: AsyncSession cannot lazy-load, so a query that needs these loads them with
-    # `joinedload` (see `get_visible_puzzle_with_details`) and any other access fails loudly.
+    # `lazy="raise"`: AsyncSession cannot lazy-load, so queries use `joinedload` (see
+    # `get_visible_puzzle_with_details`) and any other access fails loudly.
     answer_title: Mapped[Title] = relationship(lazy="raise")
     clues: Mapped[list["PuzzleClue"]] = relationship(
         order_by="PuzzleClue.step", lazy="raise", viewonly=True
@@ -76,22 +76,19 @@ class PuzzleClue(Base):
     )
     step: Mapped[int] = mapped_column(Integer, nullable=False)
     media_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    # Free text, because other games will have other hints. The game guesser uses
-    # metacritic_score, platform, genre, year and developer (see SPEC-02, game guesser steps).
+    # Free text: other games will have other hints.
     hint_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     hint_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Loaded with `joinedload` (see `get_visible_puzzle_with_details`), like the puzzle's relations.
     media_files: Mapped[list["ClueMediaFile"]] = relationship(
         order_by="ClueMediaFile.id", lazy="raise", viewonly=True
     )
 
 
 class ClueMediaFile(Base):
-    """One stored file of a clue. The cross-row rules of AC-13b (a video clue has one MP4 and
-    one poster, an image clue has one image and no poster) are not database constraints: the
-    view checks them on read and the puzzle builder on write."""
+    """The cross-row rules of AC-13b (a video clue has one MP4 and one poster, an image clue one
+    image and no poster) are not constraints: the view checks them on read, the builder on write."""
 
     __tablename__ = "clue_media_files"
     __table_args__ = (
