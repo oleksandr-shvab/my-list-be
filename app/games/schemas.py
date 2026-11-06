@@ -150,3 +150,16 @@ class GameGuesserView(BaseModel):
 # What a puzzle route returns. Today it is the game guesser's view; when a second game arrives
 # it becomes a union discriminated on `type` (AC-3), and the routes and the service do not change.
 PuzzleView = GameGuesserView
+
+
+class StatsRead(BaseModel):
+    """The account's stats in one game variant (AC-46). The win rate is the client's to compute
+    from `wins` and `played`."""
+
+    played: int = Field(description="Finished games, won or lost, daily and archive alike")
+    wins: int
+    current_streak: int | None = Field(description="Null for a variant that has no streak")
+    max_streak: int | None = Field(description="Null for a variant that has no streak")
+    distribution: dict[int, int] = Field(
+        description="Wins by guesses used: every key from 1 to `max_guesses`, zeros included"
+    )

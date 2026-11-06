@@ -1,14 +1,17 @@
 import datetime as dt
 import uuid
+from typing import NamedTuple
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.db import set_local
+from app.crud.puzzle import visible_puzzle_condition
 from app.games.enums import ProgressStatus
 from app.models.progress import Progress, ProgressGuess, ProgressOrigin
+from app.models.puzzle import Puzzle
 
 # The guesses with their titles, in position order: two queries, no lazy load.
 _WITH_GUESSES = selectinload(Progress.guesses).joinedload(ProgressGuess.title)
@@ -104,3 +107,52 @@ async def append_guess(
     if status != ProgressStatus.IN_PROGRESS:
         progress.finished_at = max(now, progress.started_at)
     await db.flush()
+
+
+class PlayRow(NamedTuple):
+    """One finished game for the stats: the plain data of a progress row and its puzzle."""
+
+    progress_id: int
+    variant: str
+    puzzle_date: dt.date
+    status: str
+    guesses_used: int
+    counts_for_streak: bool
+
+
+async def list_finished_plays(
+    db: AsyncSession, *, user_id: uuid.UUID, game_id: int, variant: str, today: dt.date
+) -> list[PlayRow]:
+    """The account's finished (won or lost) games of one game and variant on visible puzzles, for
+    the stats (AC-46). A game of a puzzle that is no longer visible (unscheduled, or before a moved
+    launch date) is left out, as in the archive (AC-12). Rows with `is_test` are left out
+    (AC-48), and so are games in progress: they count for nothing, so their guesses are never
+    counted. A plain read in one query; the rule that turns it into numbers is in
+    `app/games/stats.py`."""
+    guesses_used = (
+        select(func.count(ProgressGuess.id))
+        .where(ProgressGuess.progress_id == Progress.id)
+        .correlate(Progress)
+        .scalar_subquery()
+    )
+    result = await db.execute(
+        # Every column is labelled with its `PlayRow` field, and the row is built by name.
+        select(
+            Progress.id.label("progress_id"),
+            Puzzle.variant.label("variant"),
+            Puzzle.date.label("puzzle_date"),
+            Progress.status.label("status"),
+            guesses_used.label("guesses_used"),
+            Progress.counts_for_streak.label("counts_for_streak"),
+        )
+        .join(Puzzle, Puzzle.id == Progress.puzzle_id)
+        .where(
+            Progress.user_id == user_id,
+            Progress.is_test.is_(False),
+            Progress.status.in_([ProgressStatus.WON, ProgressStatus.LOST]),
+            Puzzle.game_id == game_id,
+            Puzzle.variant == variant,
+            visible_puzzle_condition(today),
+        )
+    )
+    return [PlayRow(**row._mapping) for row in result.all()]
