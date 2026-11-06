@@ -1,9 +1,8 @@
-"""Reading the `Range` header of a media request (AC-72b, RFC 9110 sections 5.6.1 and 14.2).
+"""`Range` handling for the media route (AC-72b, RFC 9110 sections 5.6.1 and 14.2).
 
-Starlette's `FileResponse` serves one valid range with a 206, but it answers a malformed header with
-a plain-text 400 and an unsatisfiable one with a plain-text 416 that has no body of ours. So the
-route reads the header first with the rules below and only hands `FileResponse` a header it will
-accept.
+Starlette's `FileResponse` answers a malformed header with a plain-text 400 and an unsatisfiable
+one with a plain-text 416, so the route classifies the header first and passes on only one it
+accepts.
 """
 
 import re
@@ -27,15 +26,9 @@ class RangeKind(StrEnum):
 
 
 def classify_range(header: str | None, size: int) -> RangeKind:
-    """What to do with a `Range` header for a file of `size` bytes.
-
-    A range unit other than `bytes` is ignored, so the whole file is sent (RFC 9110 section 14.2:
-    "MUST ignore a Range header field that contains a range unit it does not understand").
-    Empty list elements (`bytes=0-1,` and `bytes=,0-1`) are accepted and skipped (section 5.6.1).
-    Several ranges give the whole file, which the RFC allows ("a server MAY ignore the Range
-    header") and which spares us `multipart/byteranges`, that nothing here needs. A header with no
-    `=`, no unit, no range at all, a range that is not `first-last`, `first-` or `-suffix`, a
-    `last` below `first`, or ranges that all start past the end is not satisfiable.
+    """A unit other than `bytes` is ignored (RFC 9110 section 14.2). Empty list elements
+    (`bytes=0-1,`) are skipped (section 5.6.1). Several ranges get the whole file, which the RFC
+    allows and which spares us `multipart/byteranges`.
     """
     if header is None:
         return RangeKind.FULL

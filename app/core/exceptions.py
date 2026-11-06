@@ -2,9 +2,6 @@ from typing import Any
 
 
 class AppException(Exception):
-    """A handled error. `code` is the stable machine-readable name the frontend translates;
-    `detail` is English, for developers and logs only."""
-
     status_code: int = 500
     code: str = "internal_error"
     detail: str = "Internal server error"
@@ -77,8 +74,7 @@ class VariantNotFoundError(AppException):
 
 
 class PuzzleNotFoundError(AppException):
-    """Raised for every puzzle that is missing or not visible (draft, not scheduled, future date,
-    before launch), always with this one detail, so the bodies are identical (AC-17)."""
+    """One detail for every missing or hidden puzzle, so the bodies are identical (AC-17)."""
 
     status_code = 404
     code = "puzzle_not_found"
@@ -110,8 +106,8 @@ class PuzzleAlreadyFinishedError(AppException):
 
 
 class InvalidMediaLinkError(AppException):
-    """A media link that is expired, has a wrong signature or a key of the wrong shape. One answer
-    for all three, so the response says nothing about the file (AC-73)."""
+    """One answer for an expired link, a wrong signature and a bad key, so the response reveals
+    nothing about the file (AC-73)."""
 
     status_code = 403
     code = "invalid_media_link"
@@ -119,8 +115,7 @@ class InvalidMediaLinkError(AppException):
 
 
 class RangeNotSatisfiableError(AppException):
-    """A `Range` header that is malformed or lies outside the file (AC-72b). Only a `<video>`
-    element sees it, so the frontend has no text for it."""
+    """Only a `<video>` element sees it, so the frontend has no text for it (AC-72b)."""
 
     status_code = 416
     code = "range_not_satisfiable"
@@ -128,14 +123,12 @@ class RangeNotSatisfiableError(AppException):
 
     def __init__(self, size: int) -> None:
         super().__init__()
-        # The handler (`range_not_satisfiable_handler`) sends it as `Content-Range`.
         self.size = size
 
 
 class PuzzleDataError(AppException):
-    """A scheduled puzzle that breaks a rule of its game (for example a missing step). Not a
-    client error: it is a 500 `internal_error`, and the puzzle builder must have caught it before
-    the date. The response says nothing about the cause; `reason` is for the log."""
+    """A 500, not a client error: the puzzle builder should have caught it before the date. The
+    response hides the cause; `reason` is for the log."""
 
     def __init__(self, reason: str) -> None:
         super().__init__()

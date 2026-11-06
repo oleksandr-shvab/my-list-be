@@ -27,7 +27,7 @@ class ProgressOrigin(StrEnum):
 
 
 class Progress(Base):
-    """One account's game on one puzzle (AC-35). Created by the first guess, never by a view."""
+    """Created by the first guess, never by a view (AC-35)."""
 
     __tablename__ = "progress"
     __table_args__ = (
@@ -50,19 +50,19 @@ class Progress(Base):
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Set once, when the first guess is stored, and never changed (AC-36).
     counts_for_streak: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    # A hook for a later admin role (Q12). Nothing sets or returns it in Phase 1 (AC-43).
+    # Hook for a later admin role (Q12); nothing sets or returns it in Phase 1 (AC-43).
     is_test: Mapped[bool] = mapped_column(Boolean, server_default=false(), nullable=False)
     origin: Mapped[str] = mapped_column(String(16), nullable=False)
 
-    # `lazy="raise"`: AsyncSession cannot lazy-load, so the queries in `app/crud/progress.py`
-    # load these explicitly and any other access fails loudly.
+    # `lazy="raise"`: AsyncSession cannot lazy-load, so queries load these explicitly and any other
+    # access fails loudly.
     guesses: Mapped[list["ProgressGuess"]] = relationship(
         order_by="ProgressGuess.position", lazy="raise", viewonly=True
     )
 
 
 class ProgressGuess(Base):
-    """One stored guess of a progress row. `title_id` is null for a skip."""
+    """`title_id` is null for a skip."""
 
     __tablename__ = "progress_guesses"
     __table_args__ = (

@@ -1,10 +1,7 @@
 """Account progress and resume (AC-35, AC-36, AC-38, AC-41 to AC-45).
 
-The rules of one guess live in the game module (`tests/test_game_guesser.py`) and the guest flow in
-`tests/test_guesses.py`. Here: the tables of the progress rows, the account flow of the service,
-the guest-versus-account table, the resume service, and the concurrency of one account's game
-(committed rows on independent sessions, cleaned up in `finally`).
-"""
+Guess rules are in `tests/test_game_guesser.py`, the guest flow in `tests/test_guesses.py`. The
+concurrency tests commit rows on independent sessions and clean up in `finally`."""
 
 import asyncio
 import datetime as dt
@@ -51,8 +48,8 @@ SKIP = None
 UNKNOWN = 987_654
 TOO_LARGE_FOR_A_KEY = 2**40
 
-# Name to title id. The same set of titles as `tests/test_guesses.py`: "answer_twin" has the
-# answer's normalized name and "other_again" has "other"'s (Q9).
+# Same titles as `tests/test_guesses.py`: "answer_twin" has the answer's normalized name and
+# "other_again" has "other"'s (Q9).
 Ids = dict[str, int]
 TITLE_NAMES = {
     "answer": "Secretname Quest",
@@ -111,10 +108,9 @@ async def _new_user(db: AsyncSession, email: str) -> User:
 
 
 def _assert_signed_media(view: PuzzleView) -> None:
-    """Every view that comes back, from any path (account or guest guess, resume, the stored
-    view), has the signed links of its earned steps and no other link: one image link per step,
-    and for step 6 the clip and its poster (AC-71). Run by the helpers below, so every row of
-    every table checks it."""
+    """Every view, from any path (account or guest guess, resume, the stored view), has the signed
+    links of its earned steps and no other: one image link per step, and for step 6 the clip and
+    its poster (AC-71). The helpers below run it, so every table row checks it."""
     links = [source.url for step in view.steps for source in step.media.sources]
     links += [step.media.poster.url for step in view.steps if step.media.poster is not None]
     assert len(links) == len(view.steps) + (1 if len(view.steps) == 6 else 0)
@@ -227,7 +223,6 @@ async def _progress_sequence(db: AsyncSession) -> tuple[int, bool]:
 
 
 async def _stored_guesses(db: AsyncSession, user: User) -> list[int | None]:
-    """The user's stored guesses on every puzzle, in position order."""
     result = await db.execute(
         select(ProgressGuess.title_id)
         .join(Progress, Progress.id == ProgressGuess.progress_id)
@@ -239,8 +234,8 @@ async def _stored_guesses(db: AsyncSession, user: User) -> list[int | None]:
 
 def _same_view(view: PuzzleView) -> dict[str, object]:
     """What a guest and an account must agree on (AC-44): the whole view apart from `signed_in`,
-    `counts_for_streak` and `daily_proof` (a guest's proof for today's puzzle; an account has none).
-    Clue links do not exist yet (M1-18)."""
+    `counts_for_streak` and `daily_proof` (a guest's proof for today's puzzle; an account has
+    none)."""
     return view.model_dump(exclude={"signed_in", "counts_for_streak", "daily_proof"})
 
 
@@ -269,7 +264,6 @@ async def test__guest_and_account__same_guesses_give_the_same_view(
         assert _same_view(guest) == _same_view(account)
         previous.append(token)
 
-    # A reload shows the same game: the guest replays its list, the account reads its row.
     guest_resume = await _resume(db_session, ids, None, previous)
     account_resume = await _resume(db_session, ids, user, [])
     assert _same_view(guest_resume) == _same_view(account_resume) == _same_view(account)
@@ -300,7 +294,6 @@ async def test__account_guess__forged_previous_is_ignored(
     assert [step.step for step in view.steps] == [1, 2, 3, 4]
     assert view.answer is None
     assert await _stored_guesses(db_session, user) == [ids["other"], None, ids["sibling"]]
-    # Resume ignores it too, and changes nothing.
     resumed = await _resume(db_session, ids, user, forged)
     assert [entry.title_id for entry in resumed.guesses] == [ids["other"], None, ids["sibling"]]
     assert await _stored_guesses(db_session, user) == [ids["other"], None, ids["sibling"]]
@@ -357,7 +350,6 @@ async def test__account_guess__error_order_and_nothing_stored_on_refusal(
     assert await _progress_sequence(db_session) == sequence_before
 
 
-# The status and finish time the progress row stores after each sequence of guesses.
 STORED_ROWS = [
     pytest.param([SKIP, "answer"], "won", True, id="won"),
     pytest.param([SKIP] * 6, "lost", True, id="lost"),
@@ -439,7 +431,7 @@ async def test__account_guess__a_failing_rollback_does_not_replace_the_error(
     monkeypatch.setattr(db_session, "rollback", broken_rollback)
 
     with pytest.raises(AppException) as error:
-        await _guess(db_session, ids, user, "other")  # A duplicate.
+        await _guess(db_session, ids, user, "other")
     assert error.value.code == "duplicate_guess"
 
 
@@ -649,7 +641,7 @@ async def test__progress_rows__database_rules(
     first = progress(user)
     db_session.add(first)
     await db_session.flush()
-    assert first.is_test is False  # The server default.
+    assert first.is_test is False
 
     await rejected(progress(user), "uq_progress_user_id_puzzle_id")
     await rejected(progress(other_user, status="paused"), "ck_progress_status")
@@ -659,7 +651,7 @@ async def test__progress_rows__database_rules(
 
     db_session.add(ProgressGuess(progress_id=first.id, position=1, title_id=ids["other"]))
     db_session.add(ProgressGuess(progress_id=first.id, position=2, title_id=None))
-    db_session.add(ProgressGuess(progress_id=first.id, position=3, title_id=None))  # Two skips.
+    db_session.add(ProgressGuess(progress_id=first.id, position=3, title_id=None))
     await db_session.flush()
     await rejected(
         ProgressGuess(progress_id=first.id, position=1, title_id=ids["sibling"]),
@@ -856,10 +848,9 @@ async def test__concurrent_account_guesses__the_same_title_is_stored_once(
 async def test__progress_row__a_second_request_waits_for_the_first_to_commit(
     committed: Committed, has_row: bool
 ) -> None:
-    # Deterministic form of the race: one session holds the game's lock, and the other request
-    # must not get past it until the first one commits. With a new row, the second request's
-    # INSERT meets the first one's uncommitted row and must neither fail nor duplicate it; with an
-    # existing row, only the row lock stops it.
+    # Deterministic race: one session holds the game's lock and the other request must not get past
+    # it until the first commits. With a new row, the second INSERT meets the uncommitted row and
+    # must neither fail nor duplicate it.
     account = await committed.new_user()
     if has_row:
         await committed.guess(account, SKIP)

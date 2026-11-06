@@ -16,10 +16,6 @@ def new_request_id() -> str:
 
 
 class RequestIdMiddleware:
-    """Gives every request an id: the proxy's `X-Request-ID` if it is well formed, else a new one.
-    The id is kept in `scope["state"]` (read by the error handlers and the log filter) and is
-    returned in the `X-Request-ID` response header."""
-
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 

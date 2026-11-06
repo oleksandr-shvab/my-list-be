@@ -9,8 +9,8 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
-# Stable constraint and index names, so migrations and `alembic check` never depend on
-# Postgres's default names. Check constraints must be given a `name=` on the model.
+# Stable names, so migrations and `alembic check` never depend on Postgres defaults. Check
+# constraints need a `name=` on the model.
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
     "uq": "uq_%(table_name)s_%(column_0_N_name)s",
@@ -22,32 +22,25 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
-    # Fetch server-side defaults (`updated_at` after an update) in the same statement, so reading
-    # them after a flush does not trigger a lazy load, which AsyncSession cannot do.
+    # Reading `updated_at` after a flush must not lazy-load, which AsyncSession cannot do.
     __mapper_args__: ClassVar[dict[str, Any]] = {"eager_defaults": True}
 
 
 async def set_local(db: AsyncSession, name: str, value: str) -> None:
-    """Set a Postgres setting for the current transaction only: `set_config` with `is_local` true,
-    which this function always passes, so the value never outlives the transaction on a pooled
-    connection."""
+    """Always `is_local`, so the value never outlives the transaction on a pooled connection."""
     await db.execute(select(func.set_config(name, value, True)))
 
 
-# SQLSTATE for "lock_timeout expired" (`lock_not_available`).
 LOCK_NOT_AVAILABLE = "55P03"
-# SQLSTATE for "deadlock detected": Postgres aborted this transaction to break a lock cycle.
 DEADLOCK_DETECTED = "40P01"
 
 
 def is_lock_failure(error: DBAPIError) -> bool:
-    """A lock timeout or a deadlock: the transaction stored nothing, and the same request can be
-    sent again."""
+    """A lock timeout or a deadlock: nothing was stored, so the request can be retried."""
     return getattr(error.orig, "sqlstate", None) in (LOCK_NOT_AVAILABLE, DEADLOCK_DETECTED)
 
 
 def enum_check(column: str, enum: type[StrEnum]) -> str:
-    """The text of a CHECK constraint that allows exactly the values of a StrEnum."""
     values = ", ".join(f"'{member.value}'" for member in enum)
     return f"{column} IN ({values})"
 

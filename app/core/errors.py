@@ -34,8 +34,7 @@ class ProblemDetails(BaseModel):
     errors: list[FieldError] = Field(default_factory=list)
 
 
-# Documented on every route (OpenAPI). 422 replaces FastAPI's default validation schema, which
-# this API does not return.
+# 422 replaces FastAPI's default validation schema, which this API does not return.
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     422: {"model": ProblemDetails, "description": "Validation error"},
     500: {"model": ProblemDetails, "description": "Unexpected error"},
@@ -54,7 +53,6 @@ HTTP_STATUS_CODES = {
     503: "service_unavailable",
 }
 
-# Pydantic error types mapped to the stable codes the frontend translates.
 VALIDATION_CODES = {
     "missing": "required",
     "string_too_short": "too_short",
@@ -62,15 +60,12 @@ VALIDATION_CODES = {
     "string_type": "invalid_type",
     "int_type": "invalid_type",
     "list_type": "invalid_type",
-    # A number that cannot be read as an integer (`?limit=ten`).
     "int_parsing": "invalid_type",
-    # The same, for a string of more than 4300 digits (Python's limit on int conversion).
+    # Over 4300 digits, Python's limit on int conversion.
     "int_parsing_size": "invalid_type",
-    # A number under its `ge` or over its `le`, with the bound in `params`. `gt` and `lt` are not
-    # mapped: no route uses them, and a `min` would wrongly read as inclusive.
+    # `gt` and `lt` are not mapped: no route uses them, and a `min` would wrongly read as inclusive.
     "greater_than_equal": "too_small",
     "less_than_equal": "too_large",
-    # A body that is not a JSON object.
     "model_attributes_type": "invalid_type",
     "value_error": "invalid_value",
     "json_invalid": "invalid_json",
@@ -79,7 +74,6 @@ REQUEST_PARTS = ("body", "path", "query", "header", "cookie")
 VALIDATION_PARAMS = {
     "string_too_short": {"min": "min_length"},
     "string_too_long": {"max": "max_length"},
-    # A list over its `max_length` (the guess body's `previous`).
     "too_long": {"max": "max_length"},
     "greater_than_equal": {"min": "ge"},
     "less_than_equal": {"max": "le"},
@@ -99,7 +93,6 @@ def problem_response(
     errors: list[dict[str, Any]] | None = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    """An RFC 9457 problem-details body plus the extension members the frontend needs."""
     request_id = _request_id(request)
     body: dict[str, Any] = {
         "type": "about:blank",
@@ -113,7 +106,7 @@ def problem_response(
     response_headers = {
         REQUEST_ID_HEADER: request_id,
         "Cache-Control": "no-store",
-        # No error body is ever read as anything but JSON, whatever route it came from.
+        # Keeps a browser from sniffing an error body as anything but JSON.
         "X-Content-Type-Options": "nosniff",
         **(headers or {}),
     }
@@ -126,8 +119,8 @@ def problem_response(
 
 
 def field_from_location(location: Sequence[str | int]) -> str:
-    """The request field name of a validation error. The first part of `loc` says where the value
-    came from (`body`, `path`, `query`, `header`, `cookie`); it is dropped, and a later part with the same name stays."""
+    """Drops the leading `body`, `path`, `query`, `header` or `cookie` part of `loc`; a later part
+    with the same name stays."""
     parts = list(location)
     if parts and parts[0] in REQUEST_PARTS:
         parts = parts[1:]
@@ -138,15 +131,14 @@ def _validation_error_items(exc: RequestValidationError) -> list[dict[str, Any]]
     items: list[dict[str, Any]] = []
     for error in exc.errors():
         context = dict(error.get("ctx") or {})
-        # Errors raised by our own validators carry the form field they belong to.
+        # Our own validators carry the field they belong to.
         field = context.pop("field", None)
         if field is None:
             field = field_from_location(error["loc"])
         error_type = error["type"]
         code = VALIDATION_CODES.get(error_type, error_type)
-        # A bound is not always JSON: a `ge=date(...)` or a Decimal must not turn the 422 into a
-        # 500 when the response is rendered, and neither must `inf` or `nan`, which JSON cannot
-        # hold (the response refuses them). Such a bound is left out.
+        # A `ge=date(...)`, a Decimal, `inf` or `nan` bound must not turn the 422 into a 500 when
+        # rendered, so the encoder converts it and a non-finite float is left out.
         params = {
             name: value
             for name, value in jsonable_encoder(

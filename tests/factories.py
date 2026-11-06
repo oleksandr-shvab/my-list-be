@@ -1,5 +1,4 @@
 """Plain async helpers that create game data through the session. No factory library.
-
 They flush, never commit: the `db_session` fixture rolls everything back after the test."""
 
 import datetime as dt
@@ -22,8 +21,8 @@ CLIP_DURATION_MS = 12_000
 
 
 def media_key(puzzle_id: int, step: int, name: str) -> str:
-    """The media key of a test file: a SHA-256 hex digest, like the real ones (AC-74). `name` is
-    `source`, `webm` or `poster`."""
+    """A test media key: a SHA-256 hex digest like the real ones (AC-74). `name` is `source`,
+    `webm` or `poster`."""
     return hashlib.sha256(f"{puzzle_id}/{step}/{name}".encode()).hexdigest()
 
 
@@ -34,8 +33,8 @@ def make_clue(
     hint_value: str | None = None,
     source_url: str | None = None,
 ) -> ClueData:
-    """Plain clue data with the media of a valid clue: an image for steps 1 to 5, an MP4 and its
-    poster for step 6. The keys do not belong to any stored file."""
+    """Clue data with the media of a valid clue: images for steps 1 to 5, an MP4 and poster for
+    step 6. The keys point at no stored file."""
     is_video = step == STEP_COUNT
     width, height = IMAGE_SIZE
     source_type = ClueContentType.VIDEO_MP4 if is_video else ClueContentType.IMAGE_WEBP
@@ -68,13 +67,12 @@ def make_clue(
     )
 
 
-# A fixed expiry, so a view built with `fake_sign` is the same every time.
 FAKE_EXPIRY = dt.datetime(2030, 1, 1, tzinfo=dt.UTC)
 
 
 def fake_sign(key: str, content_type: str) -> SignedLink:
-    """A signer for module tests: the link names the key and the content type, so a test can see
-    exactly which files were signed."""
+    """A signer for module tests: the link names the key and content type, so a test can see which
+    files were signed."""
     return SignedLink(url=f"https://media.test/{key}?type={content_type}", expires_at=FAKE_EXPIRY)
 
 
@@ -113,10 +111,9 @@ async def create_puzzle(
     with_webm: bool = False,
     with_media: bool = True,
 ) -> Puzzle:
-    """A puzzle with its six clues: steps 1 to 5 are images, step 6 is a video (an MP4, a WebM
-    when `with_webm`, and a poster). The hint of step 3 is null, as for a title with no Metacritic
-    score. Every clue has a source link and, unless `with_media` is false, its media files (keys from
-    `media_key`)."""
+    """A puzzle with its six clues: steps 1 to 5 are images, step 6 is a video (an MP4, a WebM when
+    `with_webm`, and a poster). The hint of step 3 is null, as for a title with no Metacritic
+    score. Every clue has a source link and, unless `with_media` is false, its media files."""
     puzzle = Puzzle(
         game_id=game.id,
         variant=variant if variant is not None else game.default_variant,
@@ -139,7 +136,6 @@ async def create_puzzle(
                 source_url=f"https://example.com/source/{step}",
             )
         )
-    # One flush gives all six clues their ids; the media rows need them.
     db.add_all(clues)
     await db.flush()
     for clue in clues if with_media else []:

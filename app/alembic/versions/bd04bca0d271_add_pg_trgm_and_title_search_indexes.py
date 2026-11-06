@@ -10,7 +10,6 @@ from collections.abc import Sequence
 
 from alembic import op
 
-# revision identifiers, used by Alembic.
 revision: str = "bd04bca0d271"
 down_revision: str | Sequence[str] | None = "dece8484277f"
 branch_labels: str | Sequence[str] | None = None
@@ -18,8 +17,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    # A trusted extension: the database owner can create it, no superuser needed.
+    # Trusted extension: a database owner can create it.
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
     op.create_index(
         op.f("ix_titles_normalized_franchise_trgm"),
@@ -40,7 +38,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
     op.drop_index(
         op.f("ix_titles_normalized_name_trgm"),
         table_name="titles",

@@ -12,9 +12,8 @@ JSON_MEDIA_TYPE = "application/json"
 
 
 def _request_origin(headers: Headers) -> str | None:
-    """The origin the request came from: `Origin`, or the origin of `Referer` if `Origin` is
-    absent. None if there is neither, the header used appears twice, or its value is `null` or
-    not an http(s) URL. Only the header used must be unique."""
+    """`Origin`, else the origin of `Referer`. None if both are missing, the header used repeats, or
+    its value is `null` or not an http(s) URL."""
     origins = headers.getlist("origin")
     if origins:
         return serialize_origin(origins[0], strict=True) if len(origins) == 1 else None
@@ -23,8 +22,8 @@ def _request_origin(headers: Headers) -> str | None:
 
 
 def _has_body(headers: Headers) -> bool:
-    """Any `Transfer-Encoding` means a body, whatever `Content-Length` says. An unreadable or
-    negative `Content-Length` also counts as a body."""
+    """Any `Transfer-Encoding` counts as a body, and so does an unreadable or negative
+    `Content-Length`."""
     if "transfer-encoding" in headers:
         return True
     content_length = headers.get("content-length")
@@ -41,11 +40,8 @@ def _media_type(headers: Headers) -> str:
 
 
 class CsrfOriginMiddleware:
-    """Checks every method except GET, HEAD and OPTIONS before routing, dependencies or body parsing.
-
-    The request's origin (`Origin`, else the origin of `Referer`) must be exactly one of
-    `settings.allowed_origins`, else 403 `csrf_origin_mismatch`. A POST, PUT or PATCH that carries a
-    body must send `application/json`, else 415 `unsupported_media_type`. It reads only headers."""
+    """Runs before routing, dependencies and body parsing, and reads only headers: 403 for an origin
+    outside `settings.allowed_origins`, 415 for a POST, PUT or PATCH body that is not JSON."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app

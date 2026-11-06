@@ -9,9 +9,8 @@ from app.models.title import Title, TitleKind
 
 
 def _title_fields(name: str, franchise: str | None) -> dict[str, str | None]:
-    """The stored name and franchise with their normalized copies. A blank franchise is stored as
-    NULL, and so is a franchise that normalizes to nothing, so "a missing franchise never
-    matches" (AC-28) holds. A name that normalizes to nothing is refused."""
+    """A blank franchise, or one that normalizes to nothing, is stored as NULL, so a missing
+    franchise never matches (AC-28). A name that normalizes to nothing is refused."""
     normalized_name = normalize_text(name)
     if not normalized_name:
         raise ValueError("A title name needs at least one letter or digit")
@@ -43,7 +42,6 @@ async def create_title(
 async def update_title(
     db: AsyncSession, title: Title, *, name: str, franchise: str | None, year: int | None
 ) -> Title:
-    """Change a title's name, franchise and year, and rewrite the normalized columns."""
     for field, value in _title_fields(name, franchise).items():
         setattr(title, field, value)
     title.year = year
@@ -52,7 +50,7 @@ async def update_title(
 
 
 async def find_title_by_name(db: AsyncSession, *, name: str, kind: TitleKind) -> Title | None:
-    """The title of this kind with exactly this name; the lowest id if there are several."""
+    """The lowest id if several titles share the name."""
     result = await db.execute(
         select(Title).where(Title.kind == kind, Title.name == name).order_by(Title.id).limit(1)
     )
@@ -66,8 +64,6 @@ MAX_TITLE_ID = 2**31 - 1
 async def get_titles_by_ids(
     db: AsyncSession, *, ids: Collection[int], kind: TitleKind
 ) -> dict[int, Title]:
-    """The titles of this kind with these ids, by id, in one query. An id that is missing, of
-    another kind, or too large to be a key is left out."""
     keys = {title_id for title_id in ids if 1 <= title_id <= MAX_TITLE_ID}
     if not keys:
         return {}
@@ -82,15 +78,11 @@ SEARCH_SIMILARITY_THRESHOLD = 0.4
 
 
 async def search_titles(db: AsyncSession, *, kind: str, normalized_query: str) -> Sequence[Title]:
-    """At most `SEARCH_LIMIT` titles of this kind whose normalized name or franchise is close to
-    `normalized_query` (the output of `normalize_text`, not empty).
-
-    Ranked by an exact name match, then a name that starts with the query, then the higher
-    word similarity of the name and the franchise, then name (code point order) and id. The trigram operators and
-    `starts_with` take no wildcards, and the text is a bound parameter, so the query is plain
-    text (AC-22). The threshold is set for the current transaction only."""
+    """`normalized_query` is `normalize_text` output and not empty. The trigram operators and
+    `starts_with` take no wildcards and the text is a bound parameter, so the query is plain text
+    (AC-22)."""
     await set_local(db, "pg_trgm.word_similarity_threshold", str(SEARCH_SIMILARITY_THRESHOLD))
-    # `%>`: the query is similar to some run of words in the column; the GIN index serves it.
+    # `%>` is served by the GIN index.
     name_matches = Title.normalized_name.op("%>")(normalized_query)
     franchise_matches = Title.normalized_franchise.op("%>")(normalized_query)
     similarity = func.greatest(

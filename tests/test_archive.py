@@ -1,9 +1,5 @@
-"""The archive (AC-63 to AC-66).
-
-One request/response test through the route (a signed-in account), one table for what only FastAPI
-enforces (`limit`, `before`), and service-level tables for the rules: paging, the clamp, never
-today or the future, visibility, gaps, ordering, the per-account state and the guest's nulls.
-"""
+"""The archive (AC-63 to AC-66): one route test, a table for what only FastAPI enforces (`limit`,
+`before`), and service-level tables for the rules."""
 
 import datetime as dt
 import uuid
@@ -58,12 +54,12 @@ async def data(db_session: AsyncSession, set_now: SetNow) -> Data:
 
     for offset in (-3, -6, -1, -5, -2):
         await add(offset)
-    await add(0)  # today
-    await add(1)  # tomorrow
+    await add(0)
+    await add(1)
     await add(-7, status=PuzzleStatus.DRAFT)
     await add(-8, status=PuzzleStatus.IN_REVIEW)
-    await add(-9, variant="hard")  # another variant of the same game
-    await add(-31)  # the day before the launch date
+    await add(-9, variant="hard")
+    await add(-31)
     # Another game, on a day this game has no puzzle (a gap): it must not fill it.
     other_game = await create_game(db_session, slug="other-game", launch_date=LAUNCH)
     await create_puzzle(db_session, game=other_game, answer=answer, puzzle_date=_day(-4))
@@ -93,7 +89,6 @@ async def _archive(
 
 
 def _dates(page: ArchiveList) -> list[int]:
-    """The offsets from today of a page's items."""
     return [(item.date - TODAY).days for item in page.items]
 
 
@@ -157,7 +152,7 @@ async def test__archive__the_default_page_is_30_days(
     assert body["next_before"] == str(_day(-30))
 
 
-# Only FastAPI enforces these (AC-64). 200 rows are the edges that must be accepted. The error is
+# Only FastAPI enforces these (AC-64). 200 rows are the edges that must be accepted. Errors are
 # (field, code, params), the stable codes of `CONTRACTS.md`.
 QUERIES = [
     pytest.param({"limit": 1}, 200, None, id="limit_1"),
@@ -286,11 +281,11 @@ async def test__archive__an_account_sees_only_its_own_stored_state(
 ) -> None:
     me = await _account(db_session)
     other = await _account(db_session)
-    await _play(db_session, me, -1, [data.wrong_id, SKIP])  # in progress, 2 guesses
-    await _play(db_session, me, -2, [SKIP, data.answer_id])  # won, skips count
-    await _play(db_session, me, -3, [SKIP] * 6)  # lost
-    await _play(db_session, other, -6, [data.answer_id])  # somebody else's win
-    await _play(db_session, other, -5, [SKIP])  # somebody else's start
+    await _play(db_session, me, -1, [data.wrong_id, SKIP])
+    await _play(db_session, me, -2, [SKIP, data.answer_id])
+    await _play(db_session, me, -3, [SKIP] * 6)
+    await _play(db_session, other, -6, [data.answer_id])
+    await _play(db_session, other, -5, [SKIP])
 
     page = await _archive(db_session, me)
 

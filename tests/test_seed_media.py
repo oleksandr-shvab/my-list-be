@@ -17,9 +17,8 @@ from app.models.puzzle import ClueMediaFile
 SEED_MEDIA = Path(__file__).resolve().parent.parent / "scripts" / "seed_media"
 MANIFEST = json.loads((SEED_MEDIA / "manifest.json").read_text())
 
-# AC-74b: video at most 1280x720 and 4 MB, 8 to 15 seconds; image and poster at most 1920x1080
-# and 1 MB. Each dimension is checked on its own: a 720x1280 clip is within 1280x720 only as a
-# pair of numbers compared in order, and it is not a clip the builder may store.
+# AC-74b: video at most 1280x720, 4 MB, 8 to 15 seconds; image and poster at most 1920x1080, 1 MB.
+# Each dimension is checked alone: a 720x1280 clip passes a pair comparison but is not allowed.
 MB = 1024 * 1024
 VIDEO_MAX = (1280, 720)
 IMAGE_MAX = (1920, 1080)
@@ -28,7 +27,6 @@ IMAGE_MAX = (1920, 1080)
 def broken_limits(
     content_type: str, width: int, height: int, byte_size: int, duration_ms: int | None
 ) -> list[str]:
-    """The AC-74b limits a file breaks, by name. An empty list means the file is within them."""
     broken: list[str] = []
     if content_type == "video/mp4":
         max_width, max_height, max_bytes = (*VIDEO_MAX, 4 * MB)
@@ -62,7 +60,7 @@ def broken_limits(
         ("video/mp4", 640, 360, 1000, 7_999, ["duration"]),
         ("video/mp4", 640, 360, 1000, 15_001, ["duration"]),
         ("video/mp4", 640, 360, 1000, None, ["duration"]),
-        ("video/webm", 640, 360, 1000, 12_000, ["content_type"]),  # Not a seed file type.
+        ("video/webm", 640, 360, 1000, 12_000, ["content_type"]),
         ("image/webp", 1920, 1080, 1 * MB, None, []),
         ("image/webp", 1080, 1920, 1000, None, ["height"]),
         ("image/webp", 1921, 100, 1000, None, ["width"]),
@@ -113,7 +111,6 @@ async def test__seed_media__are_stored_under_their_sha256_and_every_clue_has_fil
     await seed_dev.seed(db_session, dt.date(2026, 11, 3), media_dir=tmp_path)
 
     rows = (await db_session.execute(select(ClueMediaFile))).scalars().all()
-    # Six puzzles, six clues each: five image files, and a clip with its poster.
     assert len(rows) == 6 * 7
     for row in rows:
         assert is_media_key(row.key)

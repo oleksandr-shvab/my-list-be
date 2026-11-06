@@ -79,7 +79,7 @@ async def test__list_games__only_enabled_games_with_a_module_and_public_cache(
 ) -> None:
     await create_game(db_session, slug="game-guesser", launch_date=LAUNCH)
     await create_game(db_session, slug="off-game", is_enabled=False)
-    await create_game(db_session, slug="no-module-game")  # Enabled, but no game module.
+    await create_game(db_session, slug="no-module-game")
 
     response = await client.get("/v1/games")
 
@@ -173,7 +173,6 @@ async def test__hidden_puzzle__identical_404_bodies_on_every_route(client: Async
         name: await client.get(f"/v1/games/game-guesser/puzzles/{date}")
         for name, date in hidden_dates.items()
     }
-    # A game with no puzzle for today, after the clock moves to a day with none.
     app.dependency_overrides[get_now] = lambda: NOW + dt.timedelta(days=30)
     responses["today_has_no_puzzle"] = await client.get("/v1/games/game-guesser/puzzles/today")
 
@@ -466,9 +465,6 @@ async def test__cache_control__puzzle_routes_are_private_no_store_and_errors_no_
     assert invalid.headers["cache-control"] == "no-store"
 
 
-# The game module, on plain data (no database).
-
-
 def _title(title_id: int, name: str) -> TitleData:
     return TitleData(
         id=title_id,
@@ -650,9 +646,6 @@ def test__get_puzzle__clue_steps_that_are_not_one_to_six_raise(steps: tuple[int,
         )
 
 
-# Media in the view, on plain data (AC-13b, AC-25, AC-71).
-
-
 def _file(role: ClueRole, content_type: ClueContentType, name: str) -> MediaFileData:
     return MediaFileData(
         role=role, key=media_key(9, 0, name), content_type=content_type, width=640, height=360
@@ -688,7 +681,6 @@ def test__get_puzzle__step_six_is_a_video_with_webm_first_mp4_last_and_a_poster(
     assert media.poster.url == f"https://media.test/{POSTER.key}?type=image/webp"
     assert media.poster.content_type == "image/webp"
     assert (media.width, media.height) == (640, 360)
-    # An image step has one source and no poster.
     image = view.steps[0].media
     assert (image.type, len(image.sources), image.poster) == ("image", 1, None)
 
@@ -766,9 +758,6 @@ def test__get_puzzle__media_that_break_ac13b_raise_even_for_an_unearned_step(
 
     with pytest.raises(PuzzleDataError):
         GameGuesserModule().get_puzzle(puzzle, ProgressState(), is_signed_in=False, sign=fake_sign)
-
-
-# The dev seed.
 
 
 def _load_seed_script() -> ModuleType:

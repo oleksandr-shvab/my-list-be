@@ -10,17 +10,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PLACEHOLDER_SECRET_KEYS = {"change-me", "changeme", "secret", "password"}
 MIN_SECRET_KEY_LENGTH = 32
-# The backend repo root (this file is `app/core/config.py`). A relative MEDIA_LOCAL_DIR is read
-# from here, so the seed and the server use one folder whatever their working directory is.
+# A relative MEDIA_LOCAL_DIR is read from here, so the seed and the server share one folder
+# whatever their working directory is.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PORTS = {"http": 80, "https": 443}
-# The default signing key of local development. It is long enough, so the deployed check refuses
-# it by name.
+# Long enough to pass the length check, so the deployed check refuses it by name.
 DEV_MEDIA_SIGNING_KEY = "dev-only-media-signing-key-do-not-use-in-production"
 
 
 def is_weak_secret(value: str) -> bool:
-    """A placeholder, or shorter than `MIN_SECRET_KEY_LENGTH`. One rule for every secret key."""
     return value.lower() in PLACEHOLDER_SECRET_KEYS or len(value) < MIN_SECRET_KEY_LENGTH
 
 
@@ -30,13 +28,13 @@ CLEAN_PATH = re.compile(r"(?:/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)*/?", re.ASCII)
 
 # One label of a host name: letters, digits and inner hyphens, at most 63 characters.
 HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", re.ASCII)
-# Printable ASCII with no space: a URL in a setting has no whitespace, control or non-ASCII
-# character (`urlsplit` would silently drop a tab or a newline inside it).
+# `urlsplit` silently drops a tab or a newline inside a URL, so refuse anything but printable
+# ASCII.
 PLAIN_URL_TEXT = re.compile(r"[\x21-\x7e]+", re.ASCII)
 
 
 def _is_valid_host(host: str) -> bool:
-    """A host name (also an IPv4 address) or an IPv6 address (`urlsplit` strips its brackets)."""
+    """`urlsplit` strips the brackets of an IPv6 host."""
     if ":" in host:
         try:
             ipaddress.IPv6Address(host)
@@ -48,10 +46,8 @@ def _is_valid_host(host: str) -> bool:
 
 
 def is_clean_base_url(value: str) -> bool:
-    """An absolute http(s) URL with a valid host (a host name, an IPv4 or a bracketed IPv6
-    address) that can have a clean path prefix (`https://site/api`) and nothing else: no
-    credentials, query, fragment, whitespace, `..` or escapes. Links are built by adding
-    `/v1/media/...` to it."""
+    """Links are built by adding `/v1/media/...`, so allow only a plain path prefix
+    (`https://site/api`): no credentials, query, fragment, whitespace, `..` or escapes."""
     if PLAIN_URL_TEXT.fullmatch(value) is None or "?" in value or "#" in value:
         return False
     if serialize_origin(value) is None:
@@ -63,16 +59,14 @@ def is_clean_base_url(value: str) -> bool:
 
 
 def is_https(value: str) -> bool:
-    """Whether a URL's scheme is https, in any letter case (`HTTPS://` is the same scheme)."""
+    """Case-insensitive: `HTTPS://` is the same scheme."""
     return urlsplit(value).scheme.lower() == "https"
 
 
 def serialize_origin(value: str, *, strict: bool = False) -> str | None:
-    """The origin (`scheme://host[:port]`) of an absolute http(s) URL, written one way: scheme and
-    host in lower case, the default port dropped. None if `value` is not such a URL or carries
-    credentials. Lenient (default): any path, query or fragment is ignored, so a Referer URL gives
-    its origin. Strict, for an `Origin` header: a path other than `/`, and any query or fragment
-    (even a bare `?` or `#`), make it None."""
+    """Lower-case scheme and host, default port dropped. Lenient (default) ignores path, query and
+    fragment, so a Referer URL gives its origin. Strict, for an `Origin` header, returns None for a
+    path other than `/` and for any query or fragment (even a bare `?` or `#`)."""
     value = value.strip()
     if strict and ("?" in value or "#" in value):
         return None
@@ -106,13 +100,12 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["local", "test", "staging", "production"] = "local"
 
     DATABASE_URL: str
-    # Used only by the test suite (tests/conftest.py); never set in staging or production.
+    # Tests only; never set in staging or production.
     TEST_DATABASE_URL: str = (
         "postgresql+asyncpg://postgres:postgres@localhost:5433/daily_game_challenge_test"
     )
     REDIS_URL: str = "redis://localhost:6379/0"
-    # Used only by the test suite. A different database from REDIS_URL, so a test run never
-    # touches the sessions of a running dev server.
+    # A different database from REDIS_URL, so a test run never touches a dev server's sessions.
     TEST_REDIS_URL: str = "redis://localhost:6379/1"
 
     DB_POOL_SIZE: int = 5
@@ -126,23 +119,20 @@ class Settings(BaseSettings):
     SESSION_EXPIRE_MINUTES: int = 60 * 24 * 14
 
     FRONTEND_URL: str = "http://localhost:5173"
-    # The API's own origin. Allowed to send unsafe requests only in `local` and `test`, so the
-    # docs page's "Try it out" works.
+    # Allowed to send unsafe requests only in `local` and `test`, so the docs page's "Try it out"
+    # works.
     API_BASE_URL: str = "http://localhost:8000"
 
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
-    # Clue media (M1-18). `local` serves the files itself from MEDIA_LOCAL_DIR; `s3` links to a
-    # bucket with presigned URLs.
     MEDIA_STORAGE: Literal["local", "s3"] = "local"
     MEDIA_LOCAL_DIR: str = "var/media"
-    # The base of local links. The dev default goes through the frontend's proxy, so a link loads
-    # from the page with no CORS and no cookie. With local storage in production: `https://<site>/api`.
+    # The dev default goes through the frontend's proxy, so a link loads with no CORS and no
+    # cookie. With local storage in production: `https://<site>/api`.
     MEDIA_LOCAL_BASE_URL: str = "http://localhost:5173/api"
-    # Signs local links. A separate secret from SECRET_KEY, so a leak of one does not give the other.
+    # Separate from SECRET_KEY, so a leak of one does not give the other.
     MEDIA_SIGNING_KEY: SecretStr = SecretStr(DEV_MEDIA_SIGNING_KEY)
-    # Image and poster links, and video links, live for their own time (AC-70, AC-70b): a browser
-    # keeps asking for parts of a looping clip while it plays.
+    # Video links live longer (AC-70, AC-70b): a browser keeps asking for parts of a looping clip.
     MEDIA_IMAGE_LINK_TTL_SECONDS: int = Field(default=600, ge=60, le=3600)
     MEDIA_VIDEO_LINK_TTL_SECONDS: int = Field(default=3600, ge=600, le=86400)
     S3_ENDPOINT_URL: str | None = None
@@ -153,8 +143,7 @@ class Settings(BaseSettings):
 
     @property
     def media_local_path(self) -> Path:
-        """The folder of local media. A relative MEDIA_LOCAL_DIR is read from the backend repo
-        root, not from the working directory."""
+        """A relative MEDIA_LOCAL_DIR is read from the repo root, not the working directory."""
         return PROJECT_ROOT / self.MEDIA_LOCAL_DIR
 
     @property
@@ -167,8 +156,7 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins(self) -> frozenset[str]:
-        """The origins that may send unsafe requests (see app/core/csrf.py). Cached on the inputs,
-        so changing `ENVIRONMENT` or a URL is picked up."""
+        """Cached on its inputs, so a changed `ENVIRONMENT` or URL is picked up."""
         extra_urls = () if self.is_deployed else (*self.BACKEND_CORS_ORIGINS, self.API_BASE_URL)
         return _allowed_origins(self.FRONTEND_URL, extra_urls)
 

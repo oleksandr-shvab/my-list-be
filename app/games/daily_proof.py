@@ -1,14 +1,11 @@
-"""The proof that a guest saw a puzzle on its own day (Q2, `played_as_daily` of a merge entry).
+"""Proof that a guest saw a puzzle on its own day (Q2).
 
-A guest's `counts_for_streak` lives in the browser, and a merge entry only says `played_as_daily`.
-Trusting that flag alone lets a client claim a streak it never played. So every view a guest gets
-on the puzzle's own day carries `daily_proof`, and a merge counts `played_as_daily` only with the
-proof of that puzzle.
+A merge entry only says `played_as_daily`, and trusting that flag alone lets a client claim a
+streak it never played. So a guest's view on the puzzle's own day carries `daily_proof`.
 
-The proof is `base64url(HMAC-SHA256(key, "<slug>:<variant>:<date>"))`, unpadded, with the date as
-`YYYY-MM-DD`. The key is derived from `SECRET_KEY` with its own label, so it is neither
-`SECRET_KEY` nor `MEDIA_SIGNING_KEY`. It has no expiry: it says "this puzzle was seen on its own
-day", and the date is in the message. It is a bearer value, like a signed media link.
+The proof is `base64url(HMAC-SHA256(key, "<slug>:<variant>:<YYYY-MM-DD>"))`, unpadded. The key is
+derived from `SECRET_KEY` with its own label, so it is neither `SECRET_KEY` nor
+`MEDIA_SIGNING_KEY`. It has no expiry because the date is in the message. It is a bearer value.
 """
 
 import base64
@@ -24,8 +21,7 @@ KEY_LABEL = b"daily-proof-v1"
 
 @functools.cache
 def _derive_key(secret: str) -> bytes:
-    """Cached by the secret's value: a changed `SECRET_KEY` is another argument, so it derives
-    another key and never reuses the old one."""
+    """Cached by value, so a changed `SECRET_KEY` derives another key."""
     return hmac.new(secret.encode(), KEY_LABEL, hashlib.sha256).digest()
 
 
@@ -40,7 +36,6 @@ def sign(slug: str, variant: str, puzzle_date: dt.date) -> str:
 
 
 def verify(proof: str | None, slug: str, variant: str, puzzle_date: dt.date) -> bool:
-    """True when `proof` is the proof of this puzzle. Compared in constant time."""
     if proof is None:
         return False
     expected = sign(slug, variant, puzzle_date)

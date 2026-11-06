@@ -38,9 +38,6 @@ FILE_SIZE = 1000
 FILE_BYTES = bytes(index % 251 for index in range(FILE_SIZE))
 
 
-# Range parsing, with no route (AC-72b, RFC 9110 section 14).
-
-
 @pytest.mark.parametrize(
     ("header", "expected"),
     [
@@ -61,12 +58,10 @@ FILE_BYTES = bytes(index % 251 for index in range(FILE_SIZE))
         # Several ranges: the whole file.
         pytest.param("bytes=0-1,5-6", RangeKind.FULL, id="two_ranges"),
         pytest.param("bytes=0-1,5000-6000", RangeKind.FULL, id="two_ranges_one_outside"),
-        # Outside the file.
         pytest.param("bytes=1000-", RangeKind.NOT_SATISFIABLE, id="starts_at_the_size"),
         pytest.param("bytes=5000-6000", RangeKind.NOT_SATISFIABLE, id="beyond_the_end"),
         pytest.param("bytes=-0", RangeKind.NOT_SATISFIABLE, id="empty_suffix"),
         pytest.param("bytes=2000-3000,4000-", RangeKind.NOT_SATISFIABLE, id="all_outside"),
-        # Malformed.
         pytest.param("", RangeKind.NOT_SATISFIABLE, id="empty"),
         pytest.param("bytes", RangeKind.NOT_SATISFIABLE, id="no_equals_sign"),
         pytest.param("bytes=", RangeKind.NOT_SATISFIABLE, id="no_ranges"),
@@ -96,9 +91,6 @@ def test__classify_range__table(header: str | None, expected: RangeKind) -> None
 def test__classify_range__an_empty_file_has_no_satisfiable_range() -> None:
     assert classify_range("bytes=0-", 0) == RangeKind.NOT_SATISFIABLE
     assert classify_range("bytes=-5", 0) == RangeKind.NOT_SATISFIABLE
-
-
-# The link checks and the lookup, at the service level (AC-12, AC-73, R-19).
 
 
 @dataclass
@@ -258,9 +250,6 @@ async def test__open_media__a_row_with_no_file_is_a_server_fault(world: MediaWor
 
     with pytest.raises(PuzzleDataError):
         await _open(world, world.image_key)
-
-
-# The route (AC-72, AC-72b, AC-73). One happy path, then the table of ranges and refusals.
 
 
 @pytest.fixture
@@ -475,12 +464,12 @@ async def test__media_route__no_connection_is_checked_out_while_the_body_streams
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     big_file = tmp_path / "big.bin"
-    big_file.write_bytes(b"x" * 300_000)  # Five chunks of 64 KB.
+    big_file.write_bytes(b"x" * 300_000)
     before = engine.pool.checkedout()
     checked_out_in_lookup: list[int] = []
 
     async def lookup_that_uses_the_database(db: AsyncSession, **_: object) -> MediaFile:
-        await db.execute(text("SELECT 1"))  # Checks a real connection out of the pool.
+        await db.execute(text("SELECT 1"))
         checked_out_in_lookup.append(engine.pool.checkedout())
         return MediaFile(
             path=big_file,

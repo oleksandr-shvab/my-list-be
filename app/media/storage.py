@@ -1,11 +1,3 @@
-"""Where clue media live and how a signed link to a file is made (AC-70, AC-72).
-
-Two storages answer the same question, `signed_url(key, content_type, now)`: the local folder (the
-backend serves the file itself through `app/media/router.py`) and an S3-compatible bucket (the link
-points at the bucket). A video link lives for the video lifetime; an image or a poster link for the
-image lifetime (AC-70, AC-70b).
-"""
-
 import datetime as dt
 from functools import lru_cache
 from pathlib import Path
@@ -18,9 +10,9 @@ VIDEO_CONTENT_TYPE_PREFIX = "video/"
 
 
 class MediaStorage(Protocol):
-    def signed_url(self, key: str, content_type: str, now: dt.datetime) -> tuple[str, dt.datetime]:
-        """The link to the file and the time it stops working."""
-        ...
+    def signed_url(
+        self, key: str, content_type: str, now: dt.datetime
+    ) -> tuple[str, dt.datetime]: ...
 
 
 def _lifetime_seconds(content_type: str, *, image_ttl: int, video_ttl: int) -> int:
@@ -33,8 +25,6 @@ def _expiry(now: dt.datetime, lifetime_seconds: int) -> dt.datetime:
 
 
 class LocalMediaStorage:
-    """Files in a folder, one file per key, served by the backend with a signature in the link."""
-
     def __init__(
         self,
         *,
@@ -51,7 +41,7 @@ class LocalMediaStorage:
         self.video_ttl_seconds = video_ttl_seconds
 
     def path_for(self, key: str) -> Path:
-        """The file of a key. The caller has checked the key's shape (`is_media_key`)."""
+        """The caller has checked the key's shape (`is_media_key`)."""
         return self.directory / key
 
     def signed_url(self, key: str, content_type: str, now: dt.datetime) -> tuple[str, dt.datetime]:
@@ -65,8 +55,6 @@ class LocalMediaStorage:
 
 
 class S3MediaStorage:
-    """Files in a bucket, reached with presigned GET links (SigV4)."""
-
     def __init__(
         self,
         *,
@@ -81,21 +69,19 @@ class S3MediaStorage:
         self.bucket = bucket
         self.image_ttl_seconds = image_ttl_seconds
         self.video_ttl_seconds = video_ttl_seconds
-        # Imported here, so an app that serves media from a folder never loads boto3 (it is
-        # large and slow to import).
+        # Imported here, so an app with local storage never loads boto3 (large and slow to import).
         import boto3.session
         from botocore.config import Config
 
-        # A session of its own, not boto3's shared default one: that one is created lazily and is
-        # not safe to create from several threads at once.
+        # Not boto3's shared default session: it is created lazily and is not thread-safe to
+        # create.
         self.client: Any = boto3.session.Session().client(
             "s3",
             endpoint_url=endpoint_url,
             region_name=region,
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
-            # Virtual-hosted addressing (`<bucket>.<endpoint host>`), which Hetzner Object Storage
-            # supports.
+            # Virtual-hosted addressing, which Hetzner Object Storage supports.
             config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
         )
 
@@ -103,9 +89,7 @@ class S3MediaStorage:
         lifetime = _lifetime_seconds(
             content_type, image_ttl=self.image_ttl_seconds, video_ttl=self.video_ttl_seconds
         )
-        # Presigning only computes a signature from the credentials, with no network call, so it
-        # is safe to run inside async code (the skill bans blocking boto3 calls, and this is not
-        # one).
+        # Presigning makes no network call, so it is safe in async code.
         expires_at = _expiry(now, lifetime)
         # `private` keeps shared caches out. The response's `Expires` is the link's own expiry: a
         # `max-age` counts from the moment the bucket answers, which can be just before the link
@@ -125,8 +109,6 @@ class S3MediaStorage:
 
 @lru_cache
 def build_media_storage() -> MediaStorage:
-    """The storage the settings name, built once (the S3 client is costly to make). The app builds
-    it at startup, so the first request does not pay for it."""
     if settings.MEDIA_STORAGE == "s3":
         # The settings validator has checked that these are set.
         assert settings.S3_ENDPOINT_URL and settings.S3_REGION and settings.S3_BUCKET
@@ -150,6 +132,5 @@ def build_media_storage() -> MediaStorage:
 
 
 async def get_media_storage() -> MediaStorage:
-    """The dependency. `async`, so it runs on the event loop and not in the threadpool on every
-    request; it only returns the storage built once. Tests override it."""
+    """`async`, so it runs on the event loop instead of the threadpool on every request."""
     return build_media_storage()

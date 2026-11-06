@@ -1,9 +1,6 @@
-"""Stats and streak of one account in one game variant (AC-46 to AC-54).
-
-Pure functions on plain data: no database, no clock, no HTTP. The service loads the plays and
-passes today's date in, so the account's stats and the guest merge test (AC-61) run the same code.
-The rules are pinned by the S1 to S19 and T1 to T4 tables of SPEC-02 (`tests/test_stats_rules.py`),
-which the frontend's guest stats must also match (Q8).
+"""Pure functions on plain data, so the account's stats and the guest merge test (AC-61) run the
+same code. The rules are the S1 to S19 and T1 to T4 tables of SPEC-02, which the frontend's guest
+stats must also match (Q8).
 """
 
 import datetime as dt
@@ -18,9 +15,7 @@ MAX_MISSED_DAYS = 3
 
 @dataclass(frozen=True)
 class Play:
-    """One stored game of the account, with only what the rules read: the puzzle's variant and date
-    (the streak day, AC-49), its status, the guesses used (skips included, AC-30) and the flag
-    stored with its first guess (AC-36)."""
+    """`guesses_used` counts skips (AC-30); `puzzle_date` is the streak day (AC-49)."""
 
     variant: str
     puzzle_date: dt.date
@@ -36,10 +31,9 @@ class Stats:
     # None when the variant has no streak (AC-51).
     current_streak: int | None
     max_streak: int | None
-    # Wins by guesses used: every key from 1 to the game's `max_guesses`, zeros included.
     distribution: dict[int, int]
-    # The won plays whose guess count is outside 1 to `max_guesses`, which have no bucket. They
-    # are bad stored data. The caller logs them, since it knows which stored rows they are.
+    # Wins with a guess count outside 1 to `max_guesses` (bad stored data). The caller logs them,
+    # since it knows which rows they are.
     unbucketed_wins: tuple[Play, ...]
 
 
@@ -51,18 +45,13 @@ def compute_stats(
     variant: str,
     default_variant: str,
 ) -> Stats:
-    """The stats of `plays` in `variant`, which must hold no `is_test` row (AC-48). Every play must
-    be of `variant`, finished or not, else `ValueError`: the caller loaded the wrong rows. The guest
-    merge test (M1-15, AC-61) passes the plays of the variant it compares, with `variant` and
-    `default_variant` both the game's default variant.
+    """`plays` must hold no `is_test` row (AC-48) and all be of `variant`, finished or not, else
+    `ValueError`. Only finished plays count (AC-47). The streak fields are None unless `variant` is
+    `default_variant` (AC-51).
 
-    Only finished plays count (AC-47), archive plays included. The streak fields are None unless
-    `variant` is `default_variant` (AC-51).
-
-    A won play with fewer than 1 or more than `max_guesses` guesses is bad stored data. It still
-    counts in `played`, in `wins` and as a streak day, like any other win, and is left out of
-    `distribution` only. It is returned in `unbucketed_wins`, so one bad row never breaks the
-    account's stats."""
+    A win with fewer than 1 or more than `max_guesses` guesses is bad stored data: it counts
+    everywhere except `distribution` and is returned in `unbucketed_wins`, so one bad row never
+    breaks the stats."""
     plays = list(plays)
     if any(play.variant != variant for play in plays):
         raise ValueError(f"Every play must be of the variant {variant!r}")
@@ -94,12 +83,9 @@ def compute_stats(
 
 
 def streaks(streak_days: Iterable[dt.date], *, today: dt.date) -> tuple[int, int]:
-    """`(current_streak, max_streak)` of the days that count for the streak (AC-49, AC-50).
-
-    Walk the days in order: a gap of 1 to 3 missed days keeps the run and adds only the day
-    played, a gap of 4 or more starts a new run at 1. The current streak is the last run's length
-    while the missed days after the last streak day, not counting today, are 3 or fewer, and 0
-    otherwise: today is not missed until it is over."""
+    """A gap of 1 to 3 missed days keeps the run, 4 or more starts a new one. The current streak is
+    0 once more than 3 days were missed after the last streak day; today is not missed until it is
+    over (AC-49, AC-50)."""
     run = 0
     longest = 0
     last_day: dt.date | None = None

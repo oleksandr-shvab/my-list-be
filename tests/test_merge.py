@@ -1,11 +1,7 @@
-"""Guest merge (AC-55 to AC-62). The guess rules themselves are in `tests/test_game_guesser.py`;
-here: the route's happy path and its request validation, then tables at the service level over
-what an entry becomes (replay, rejection, the stored fields), a request with every kind of entry,
-the account's game that wins, a second identical request that changes nothing (stats included),
-and a lock timeout.
+"""Guest merge (AC-55 to AC-62). The guess rules are in `tests/test_game_guesser.py`.
 
 A fixture commits its data (`db_session.commit()` releases the test's savepoint), because a refused
-merge rolls back, and the fixtures must not go with it."""
+merge rolls back and the fixtures must not go with it."""
 
 import datetime as dt
 import uuid
@@ -127,9 +123,8 @@ def entry(
     proof: str | None = VALID,
 ) -> MergeEntry:
     """A merge entry. A string in `guesses` is a title name of the world. `proof` is the entry's
-    `daily_proof`: `VALID` signs the entry's own puzzle, anything else is sent as it is. The body
-    also carries the outcome a lying client would claim; it is not part of the contract and must
-    change nothing."""
+    `daily_proof`: `VALID` signs the entry's own puzzle, anything else is sent as is. The body also
+    carries the outcome a lying client would claim; it must change nothing."""
     if proof == VALID:
         proof = daily_proof.sign(SLUG, variant, puzzle_date)
     guess_ids = [ids[token] if isinstance(token, str) else token for token in guesses or []]
@@ -152,7 +147,7 @@ async def merge(db: AsyncSession, account: User, *entries: MergeEntry) -> MergeR
 
 
 async def stored_games(db: AsyncSession) -> list[tuple[Any, ...]]:
-    """Every stored game with its guesses, by puzzle date: the whole state a merge could change."""
+    """Every stored game with its guesses, by puzzle date."""
     games = await db.execute(
         select(
             Progress.id,
@@ -198,8 +193,8 @@ async def count_games(db: AsyncSession) -> int:
     return (await db.execute(select(func.count(Progress.id)))).scalar_one()
 
 
-# AC-56, AC-59: each entry is replayed through the module; its status comes from the rules and
-# never from the client. A row is (guesses, status stored, or the rejection code).
+# AC-56, AC-59: each entry is replayed, and its status comes from the rules, never from the client.
+# A row is (guesses, status stored, or the rejection code).
 REPLAY_ROWS = [
     pytest.param(["answer"], WON, id="won_in_one"),
     pytest.param(["answer_twin"], WON, id="won_by_the_same_normalized_name"),
@@ -242,8 +237,8 @@ async def test__merge_entry__replay_decides_the_status_or_rejects(
         assert await count_games(db_session) == 0
 
 
-# AC-59: the entry names a variant or a puzzle that is not there for the player (the puzzle's own
-# 404 rules: a draft, the future, before the launch date, no puzzle at all).
+# AC-59: a variant or puzzle that is not there for the player (a draft, the future, before the
+# launch date, no puzzle at all) is rejected like the puzzle's own 404.
 UNREACHABLE_ROWS = [
     pytest.param(TODAY, "hard", "variant_not_found", id="unknown_variant"),
     pytest.param(DRAFT_DAY, "default", "puzzle_not_found", id="draft"),
@@ -268,9 +263,8 @@ async def test__merge_entry__a_puzzle_or_variant_that_is_not_there_is_rejected(
     assert await count_games(db_session) == 0
 
 
-# AC-57, AC-49, R-23: what a stored entry carries. With the entry's valid proof, the flag is the
-# client's `played_as_daily` whatever the date says (Q2), the origin is `merge`, and both times are
-# the request's `now`.
+# AC-57, AC-49, R-23, Q2: with the valid proof, the flag is the client's `played_as_daily` whatever
+# the date says, the origin is `merge`, and both times are the request's `now`.
 @pytest.mark.parametrize(
     ("puzzle_offset", "daily"),
     [
@@ -313,9 +307,8 @@ def proof_of(
 
 
 # Q2: `played_as_daily` counts for the streak only with the valid `daily_proof` of that exact
-# puzzle (slug, variant and date). A claim without one is stored as an archive play, not rejected,
-# and counted in `daily_unproven`. A row is (offset, daily, proof of the entry's date, expected
-# `counts_for_streak`, expected `daily_unproven`).
+# puzzle. Without it the entry is stored as an archive play, not rejected, and counted in
+# `daily_unproven`.
 PROOF_ROWS = [
     pytest.param(0, True, proof_of(), True, 0, id="valid_proof_today"),
     pytest.param(2, True, proof_of(), True, 0, id="valid_proof_of_an_archive_day"),
@@ -377,9 +370,8 @@ async def test__merge__an_unproven_claim_that_is_not_stored_is_not_counted_as_un
     assert result.daily_unproven == 1
 
 
-# Q2: the views a guest gets carry `daily_proof` on the puzzle's own day, and only then. An
-# account's views never do (its games are stored, so it never merges). A row is (route, days ago
-# the puzzle is from today, signed in, expects a proof).
+# Q2: a guest's views carry `daily_proof` on the puzzle's own day, and only then. An account's views
+# never do: its games are stored, so it never merges.
 PROOF_VIEW_ROWS = [
     pytest.param("view", 0, False, True, id="view_today_guest"),
     pytest.param("resume", 0, False, True, id="resume_today_guest"),
@@ -427,9 +419,9 @@ async def test__puzzle_views__a_guest_gets_a_daily_proof_only_on_the_puzzles_own
         assert view.daily_proof is None
 
 
-# AC-59, AC-60: one entry of each kind among good ones. The bad ones are reported in request
-# order and the good ones are stored. A repeat of one date in the request counts as present (R-22),
-# and the account's earlier game on another date is not touched (AC-58).
+# AC-59, AC-60: one entry of each kind among good ones. Bad ones are reported in request order, good
+# ones are stored. A repeated date counts as present (R-22); the account's earlier game stays
+# (AC-58).
 async def test__merge__one_rejection_of_each_kind_still_merges_the_others(
     db_session: AsyncSession, world: World
 ) -> None:
@@ -473,7 +465,6 @@ async def test__merge__one_rejection_of_each_kind_still_merges_the_others(
         ],
     }
     after = await stored_games(db_session)
-    # The account's own earlier game is the same row as before, and three games are new.
     assert before[0] in after
     assert await count_games(db_session) == 4
     assert [(await stored_of(db_session, days_ago(n)))[0].status for n in (0, 1, 2)] == [
@@ -483,8 +474,8 @@ async def test__merge__one_rejection_of_each_kind_still_merges_the_others(
     ]
 
 
-# AC-58: a game the account already has, begun by playing, is never changed by an entry for the
-# same puzzle, whatever the entry says (a win, another flag, other guesses).
+# AC-58: a game the account already has is never changed by an entry for the same puzzle, whatever
+# the entry says.
 async def test__merge__the_accounts_own_game_wins(db_session: AsyncSession, world: World) -> None:
     ids = world.ids
     other_account = await new_user(db_session, "other@example.com")
@@ -513,26 +504,24 @@ async def test__merge__the_accounts_own_game_wins(db_session: AsyncSession, worl
         True,
     )
     assert stored_ids == [ids["w1"]]
-    # Another account's merge for that puzzle is its own game, apart from this one.
     other = await merge(db_session, other_account, entry(ids, TODAY, ["answer"]))
     assert other.stored == 1
     assert await count_games(db_session) == 2
 
 
-# AC-61, AC-52: a second identical request changes nothing, rows and stats alike, and the stats
-# are those the module's rules give for the guest's own plays (the same `compute_stats` the
-# frontend's guest stats must agree with). One variant's plays are passed (`compute_stats`).
+# AC-61, AC-52: a second identical request changes nothing, rows and stats alike. The stats match
+# `compute_stats` over the guest's own plays, as the frontend's guest stats must.
 async def test__merge__a_second_identical_request_changes_nothing_and_stats_match(
     db_session: AsyncSession, world: World
 ) -> None:
     ids = world.ids
     request = [
-        entry(ids, days_ago(0), ["w1", "answer"]),  # Won in 2, a streak day.
-        entry(ids, days_ago(1), ["answer"]),  # Won in 1.
+        entry(ids, days_ago(0), ["w1", "answer"]),
+        entry(ids, days_ago(1), ["answer"]),
         entry(ids, days_ago(2), WRONG_SIX),  # Lost; finished days count for the streak.
         entry(ids, days_ago(3), [SKIP, SKIP, "w1", "answer"], daily=False),  # Archive: no day.
         entry(ids, days_ago(4), ["w1"]),  # In progress: counts for nothing.
-        entry(ids, FUTURE_DAY, ["answer"]),  # Rejected.
+        entry(ids, FUTURE_DAY, ["answer"]),
     ]
     guest_plays = [
         Play("default", days_ago(0), WON, 2, True),
@@ -562,7 +551,6 @@ async def test__merge__a_second_identical_request_changes_nothing_and_stats_matc
     stats_after_first = await stats()
 
     second = await merge(db_session, world.user, *request)
-    # The same request in two chunks is the same again.
     third = await merge(db_session, world.user, *request[:3])
     fourth = await merge(db_session, world.user, *request[3:])
 
@@ -599,10 +587,9 @@ async def test__merge__an_unknown_game_is_refused_before_the_entries(
     assert await count_games(db_session) == 0
 
 
-# AC-58 and no answer oracle: an entry for a puzzle the account already has is `already_present`
-# and is never replayed, so a guest cannot ask "is X the answer?" by sending `[X, null]` (a replay
-# says "invalid" after a win and "valid" otherwise, with no guess used). Whatever the guesses,
-# valid or not, the response is the same.
+# AC-58, no answer oracle: an entry for a puzzle the account already has is `already_present` and
+# never replayed, so a guest cannot probe "is X the answer?" with `[X, null]` (a replay says
+# "invalid" after a win and "valid" otherwise).
 ORACLE_ROWS = [
     pytest.param(["answer", SKIP], id="answer_then_a_skip"),
     pytest.param(["w2", SKIP], id="wrong_then_a_skip"),
@@ -642,11 +629,9 @@ async def test__merge__an_owned_puzzle_is_present_whatever_the_guesses_say(
     assert await stored_games(db_session) == before
 
 
-# A game the account begins between the owned read and the replay (a guess in another tab): the
-# owned read saw nothing, so the entry is replayed and fails, but the account owns the puzzle by the
-# end, so it is `already_present` and not a rejection (AC-58). The window is simulated: the first
-# owned read answers "nothing" while the row exists. An entry that fails on a puzzle the account
-# does not own stays rejected.
+# AC-58: a game the account begins between the owned read and the replay (another tab) is
+# `already_present`, not a rejection. The first owned read is faked to find nothing. An entry that
+# fails on a puzzle the account does not own stays rejected.
 async def test__merge__a_game_begun_after_the_owned_read_is_present_not_rejected(
     db_session: AsyncSession, world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -699,9 +684,8 @@ async def test__merge__a_game_begun_after_the_owned_read_is_present_not_rejected
     assert await stored_games(db_session) == before
 
 
-# The guess count and the variant are checked before the database is asked anything for the entry:
-# such an entry never reaches the puzzle query, and its code is the count's even when its puzzle
-# is hidden.
+# The guess count and the variant are checked before any query for the entry, so its code is the
+# count's even when its puzzle is hidden.
 async def test__merge__a_bad_guess_count_or_variant_never_reaches_the_database(
     db_session: AsyncSession, world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -737,8 +721,8 @@ async def test__merge__a_bad_guess_count_or_variant_never_reaches_the_database(
     assert result.stored == 1
 
 
-# Two merges of one account that overlap take the row locks of their inserts in the same order
-# only when each stores in one order, whatever order the client sent: sorted by (variant, date).
+# Overlapping merges of one account lock rows in the same order only if each stores sorted by
+# (variant, date), whatever order the client sent.
 async def test__merge__entries_are_stored_sorted_by_variant_and_date(
     db_session: AsyncSession, world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -763,8 +747,8 @@ async def test__merge__entries_are_stored_sorted_by_variant_and_date(
     assert dates == sorted(dates)
 
 
-# A rollback that fails never replaces the error being handled, and its log line names the
-# operation that failed ("merge"), not a guess.
+# A failed rollback never replaces the error being handled, and its log line names the failed
+# operation ("merge").
 async def test__merge__a_failing_rollback_is_logged_and_does_not_replace_the_error(
     db_session: AsyncSession,
     world: World,
@@ -793,9 +777,8 @@ class FakeDriverError(Exception):
         self.sqlstate = sqlstate
 
 
-# A lock timeout or a deadlock while an entry is stored (another request holds the same game) is
-# 503 and nothing of the request is stored, entries before it included; any other database error
-# is not hidden.
+# A lock timeout or deadlock while an entry is stored (another request holds the game) is 503 and
+# stores nothing, earlier entries included. Any other database error is not hidden.
 @pytest.mark.parametrize(
     ("sqlstate", "error_type"),
     [
@@ -891,8 +874,8 @@ def _valid_entry(ids: Ids) -> dict[str, Any]:
     }
 
 
-# AC-55, AC-62 and the shape of the body. FastAPI answers these before the route runs, so one
-# table through the client. `errors` is the list of (field, code, params); None means success.
+# AC-55, AC-62 and the body shape: FastAPI answers these before the route runs. `errors` is a list
+# of (field, code, params); None means success.
 VALIDATION_ROWS = [
     pytest.param(
         lambda e: {"entries": [e] * 501},
@@ -949,10 +932,9 @@ async def test__merge_progress__request_validation(
     assert await count_games(db_session) == 0
 
 
-# The caps on `variant` (32, the length of `puzzles.variant`) and `daily_proof` (100): the last
-# length that fits is accepted and one more is a 422. A row is (field, length, the 422's field and
-# max or None, (stored, rejected) of the 200). A variant that fits but names no variant is a
-# rejected entry, not a 422.
+# Caps on `variant` (32, the length of `puzzles.variant`) and `daily_proof` (100): the last length
+# that fits is accepted, one more is a 422. A variant that fits but names no variant is a rejected
+# entry, not a 422.
 LENGTH_ROWS = [
     pytest.param("variant", 32, None, (0, 1), id="variant_32"),
     pytest.param("variant", 33, ("entries.0.variant", 32), None, id="variant_33"),
@@ -1008,8 +990,8 @@ async def test__merge_progress__a_guest_gets_401_and_nothing_is_stored(
     assert await count_games(db_session) == 0
 
 
-# The proof is compared with `hmac.compare_digest`, never with `==`: a spy sees every comparison,
-# a right proof and a wrong one alike.
+# The proof is compared with `hmac.compare_digest`, never `==`: a spy sees every comparison, right
+# proof or wrong.
 def test__daily_proof__verify_compares_in_constant_time(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[bytes, bytes]] = []
     real_compare = daily_proof.hmac.compare_digest
@@ -1028,8 +1010,8 @@ def test__daily_proof__verify_compares_in_constant_time(monkeypatch: pytest.Monk
     assert calls[0] == (proof.encode(), proof.encode())
 
 
-# The derived key is cached by the secret's value: derived once per secret, and a changed
-# `SECRET_KEY` gives other proofs (never the old key's), and the old secret gives the old ones back.
+# The derived key is cached per secret value: a changed `SECRET_KEY` gives other proofs, and the old
+# secret gives the old ones back.
 def test__daily_proof__the_key_is_cached_per_secret_value(monkeypatch: pytest.MonkeyPatch) -> None:
     original = daily_proof.sign(SLUG, "default", TODAY)
     daily_proof._derive_key.cache_clear()
@@ -1047,8 +1029,8 @@ def test__daily_proof__the_key_is_cached_per_secret_value(monkeypatch: pytest.Mo
     assert daily_proof.sign(SLUG, "default", TODAY) == original
 
 
-# Every game's view inherits `daily_proof` from the base model, and a value set by the service is
-# validated: a view built with no proof has `null`, and a wrong type is refused.
+# Every game view inherits `daily_proof` from the base model and the service's value is validated:
+# no proof gives `null`, a wrong type is refused.
 def test__game_view_base__daily_proof_defaults_to_null_and_is_validated_on_assignment() -> None:
     view = MODULES[SLUG].get_puzzle(
         _puzzle_data_for_view(), ProgressState(), is_signed_in=False, sign=fake_sign

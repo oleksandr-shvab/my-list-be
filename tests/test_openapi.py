@@ -7,8 +7,7 @@ SNAPSHOT = Path(__file__).resolve().parent.parent / "openapi" / "openapi.json"
 
 
 def test__openapi_snapshot__matches_the_app() -> None:
-    # The frontend generates its types from this file: regenerate it with
-    # `uv run python scripts/export_openapi.py` whenever a route or schema changes.
+    # Regenerate with `uv run python scripts/export_openapi.py` after a route or schema change.
     committed = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
 
     assert committed == json.loads(json.dumps(app.openapi())), "openapi/openapi.json is stale"

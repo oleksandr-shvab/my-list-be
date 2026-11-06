@@ -130,7 +130,6 @@ async def test__get_stats__happy_path_for_a_signed_in_account(
 
     await store(2, WON, 3)
     await store(1, LOST, 6)
-    # Another game's plays are not this game's stats.
     other_game = await create_game(db_session, slug="other-game", launch_date=days_ago(30))
     await store_play(
         db_session,
@@ -141,7 +140,6 @@ async def test__get_stats__happy_path_for_a_signed_in_account(
         status=WON,
         guesses=1,
     )
-    # Another account's game is nobody else's stats.
     await store_play(
         db_session,
         user_id=other.id,
@@ -330,7 +328,6 @@ async def test__get_stats__skips_a_play_of_a_puzzle_that_is_no_longer_visible(
     if hide == "unschedule":
         assert (after.played, after.wins) == (2, 2)
         assert after.distribution == {1: 1, 2: 0, 3: 1, 4: 0, 5: 0, 6: 0}
-        # Days 3 and 1 ago remain, with one missed day between them: the run continues.
         assert (after.current_streak, after.max_streak) == (2, 2)
     else:
         assert (after.played, after.wins) == (1, 1)
@@ -401,6 +398,5 @@ async def test__get_stats__counts_a_bad_win_without_a_bucket_and_logs_a_warning(
     assert stats.distribution == {1: 0, 2: 1, 3: 0, 4: 0, 5: 0, 6: 0}
     (record,) = caplog.records
     assert record.levelno == logging.WARNING  # Not an error: it repeats on every read.
-    # Enough to find the row: the progress id, the user id and the puzzle date.
     for found in (str(stored[1].progress.id), str(account.id), str(days_ago(2))):
         assert found in record.getMessage()

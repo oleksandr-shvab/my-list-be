@@ -1,8 +1,7 @@
 """Signed links for the local media route (AC-70, AC-73).
 
-A link carries an expiry (Unix seconds) and a signature: HMAC-SHA256 over the key and the expiry,
-written as unpadded base64url. The signature is the only proof, so nothing else (the date, the
-game, the user) goes into it. Anyone holding a link can open it until it expires (a bearer link).
+A bearer link: the signature (HMAC-SHA256 over key and expiry) is the only proof, so anyone holding
+the link can open it until it expires.
 """
 
 import base64
@@ -26,9 +25,8 @@ def sign_link(key: str, expires_at: int, secret: bytes) -> str:
 
 
 def is_valid_link(key: str, expires_at: int, signature: str, *, secret: bytes, now: int) -> bool:
-    """True when `signature` is the signature of this key and expiry and `now` is before the
-    expiry. The signature is compared in constant time, so a response time does not tell an
-    attacker how many leading characters were right."""
+    """Constant-time compare, so response time does not reveal how many leading characters were
+    right."""
     expected = sign_link(key, expires_at, secret)
     is_signature_valid = hmac.compare_digest(signature.encode(), expected.encode())
     return is_signature_valid and now < expires_at

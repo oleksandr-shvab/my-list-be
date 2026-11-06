@@ -1,14 +1,6 @@
-"""The game guesser: six clues, six guesses, a title to find.
-
-Clue steps: 1 is a pixelated crop with no hint; 2 to 5 are screenshots with the hints
-`metacritic_score`, `platform`, `genre` and `year` (a title with no score has a null hint); 6 is
-a muted looping clip with the hint `developer`. `hint_kind` stays free text in the database,
-because other games will have other hints.
-
-Media (AC-13b): an image clue has one `image/webp` file and no poster. A video clue has one
-`video/mp4` file, at most one `video/webm` file and one poster (an `image/webp` still frame). The
-view checks this on every read, for all six steps, so a broken puzzle fails at step 1 and not
-when the player reaches step 6.
+"""Media rules (AC-13b): an image clue has one `image/webp` file and no poster. A video clue has
+one `video/mp4`, at most one `video/webm` and one poster (an `image/webp`). The view checks all six
+steps on every read, so a broken puzzle fails at step 1, not when the player reaches step 6.
 """
 
 from dataclasses import dataclass, replace
@@ -94,11 +86,8 @@ class GameGuesserModule:
     def submit_guess(
         self, puzzle: PuzzleData, state: ProgressState, guess: TitleData | None
     ) -> tuple[ProgressState, GuessResult]:
-        """A skip (`None`) is `skipped`. A guess is correct when it is the answer title or has the
-        same normalized name (Q9), `franchise` when it is wrong and both normalized franchises are
-        present and equal (a missing franchise never matches, AC-28), else `wrong`. A correct
-        guess wins; a sixth guess or skip that is not correct loses (AC-29). The score is the
-        number of guesses used, skips included (AC-30)."""
+        """`franchise` needs both normalized franchises present and equal (AC-28). The sixth guess
+        or skip that is not correct loses (AC-29). The score counts skips (AC-30)."""
         if state.status != ProgressStatus.IN_PROGRESS:
             raise GameFinishedError()
         if guess is not None:
@@ -119,8 +108,7 @@ class GameGuesserModule:
 
 
 def _is_same_title(known: TitleData | None, guess: TitleData) -> bool:
-    """The equivalence of Q9, used for both the answer and a repeated guess: the same title or the
-    same normalized name ("Portal 2" and "PORTAL  2" are one guess)."""
+    """Q9, for both the answer and a repeated guess: "Portal 2" and "PORTAL  2" are one guess."""
     return known is not None and (
         known.id == guess.id or known.normalized_name == guess.normalized_name
     )
@@ -139,8 +127,7 @@ def _grade(answer: TitleData, guess: TitleData | None) -> GuessResult:
 
 @dataclass(frozen=True)
 class _MediaLayout:
-    """The files of a clue that passed the AC-13b check: the sources in the order a browser should
-    try them (WebM first, MP4 last) and the poster of a video."""
+    """Files that passed the AC-13b check, sources in the order a browser should try them."""
 
     sources: tuple[MediaFileData, ...]
     poster: MediaFileData | None

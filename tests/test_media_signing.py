@@ -129,13 +129,10 @@ def test__is_media_key__only_a_lowercase_sha256_hex_digest(value: str, expected:
     assert is_media_key(value) is expected
 
 
-# Link lifetimes (AC-70, AC-70b).
-
-
 @pytest.mark.parametrize(
     ("content_type", "ttl"),
     [
-        ("image/webp", IMAGE_TTL_SECONDS),  # Images and posters: the short lifetime.
+        ("image/webp", IMAGE_TTL_SECONDS),
         ("video/mp4", VIDEO_TTL_SECONDS),
         ("video/webm", VIDEO_TTL_SECONDS),
     ],
@@ -161,7 +158,6 @@ def test__local_signed_url__lifetime_follows_the_content_type_and_the_link_verif
         secret=TEST_SIGNING_KEY,
         now=int(NOW.timestamp()),
     )
-    # One second after the expiry, the same link is refused.
     assert not is_valid_link(
         KEY,
         int(query["exp"][0]),
@@ -177,9 +173,6 @@ def test__local_signed_url__expiry_is_whole_seconds() -> None:
     _, expires_at = make_local_storage().signed_url(KEY, "image/webp", now)
 
     assert expires_at == NOW + dt.timedelta(seconds=IMAGE_TTL_SECONDS)
-
-
-# The S3 storage: presigning is local arithmetic, so it needs no network.
 
 
 def test__s3_signed_url__video_link_has_the_bucket_host_and_the_video_lifetime(
@@ -219,9 +212,6 @@ def test__s3_signed_url__video_link_has_the_bucket_host_and_the_video_lifetime(
     assert image_query["response-expires"] == [format_datetime(image_expiry, usegmt=True)]
     assert "max-age" not in image_url
     assert image_expiry == NOW + dt.timedelta(seconds=IMAGE_TTL_SECONDS)
-
-
-# Building the storage once.
 
 
 def test__s3_storage__uses_its_own_boto3_session_not_the_shared_default_one(

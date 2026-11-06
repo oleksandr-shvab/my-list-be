@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Build the media storage (the S3 client) once, off the event loop, so no request pays for it
-    # and a broken storage setting stops the start.
+    # Built once, off the event loop, so a broken storage setting stops the start.
     await anyio.to_thread.run_sync(build_media_storage)
     yield
     await redis_client.aclose()
@@ -37,19 +36,18 @@ app = FastAPI(
     lifespan=lifespan,
     generate_unique_id_function=operation_id,
     responses=ERROR_RESPONSES,
-    # Interactive docs only outside staging and production; /openapi.json stays for the Orval flow.
+    # No interactive docs when deployed; /openapi.json stays for the Orval flow.
     docs_url=None if settings.is_deployed else "/docs",
     redoc_url=None if settings.is_deployed else "/redoc",
 )
 
 register_error_handlers(app)
 
-# Added first, so it is the innermost middleware: its 403 and 415 still get X-Request-ID, and it
-# runs before routing, dependencies and body parsing.
+# Added first, so it is innermost: its 403 and 415 still get X-Request-ID.
 app.add_middleware(CsrfOriginMiddleware)
 
-# Production is same-origin (the proxy serves the SPA and the API on one origin), so CORS is
-# only for local development, where Vite runs on another port.
+# Production is same-origin (the proxy serves the SPA and the API), so CORS is only for local
+# development, where Vite runs on another port.
 if settings.BACKEND_CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
@@ -61,6 +59,6 @@ if settings.BACKEND_CORS_ORIGINS:
     )
 app.add_middleware(RequestIdMiddleware)
 
-# Health checks are infrastructure, not part of the versioned API.
+# Health checks sit outside the versioned API.
 app.include_router(health_router)
 app.include_router(api_router, prefix="/v1")

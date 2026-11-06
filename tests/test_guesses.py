@@ -1,8 +1,7 @@
 """Guesses and the guest replay (AC-4, AC-26 to AC-34, AC-37, AC-39, AC-40).
 
-The rules live in the game module (`tests/test_game_guesser.py`). Here: the service that replays
-a guest's `previous` and applies the new guess, and the route.
-"""
+The rules live in `tests/test_game_guesser.py`. Here: the service that replays a guest's `previous`
+and applies the new guess, and the route."""
 
 import datetime as dt
 import re
@@ -114,7 +113,6 @@ async def _guess(
 # Each row: previous, new guess, then the error code, or None for an accepted guess and the
 # status the game has afterwards.
 GUESS_ROWS = [
-    # Accepted.
     pytest.param([], "other", None, "in_progress", id="first_wrong_guess"),
     pytest.param([], SKIP, None, "in_progress", id="first_skip"),
     pytest.param([SKIP, "other"], "answer", None, "won", id="win_on_the_third"),
@@ -318,7 +316,6 @@ def _leaks(text: str, ids: Ids) -> list[str]:
     return found
 
 
-# A won game and a lost game, played through the route with a growing `previous`.
 WON_GAME = (
     [SKIP, "other", "answer"],
     ["skipped", "wrong", "correct"],

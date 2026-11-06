@@ -2,26 +2,23 @@
 
     ENVIRONMENT=local uv run python scripts/bench_title_search.py [--titles 50000]
 
-It adds 50,000 made-up titles to the dev database, runs `VACUUM (ANALYZE)`, times about 200
-searches (typos, words of a name, franchises, prefixes) and prints the median, the 95th percentile
-and the slowest times in milliseconds. The target is a p95 under 150 ms. The titles use a small
-vocabulary on purpose, so a typical search word matches about 2% of them: harder than real titles.
+It adds the titles to the dev database, runs `VACUUM (ANALYZE)`, times about 200 searches (typos,
+words of a name, franchises, prefixes) and prints the median, the 95th percentile and the slowest
+times in milliseconds. The target is a p95 under 150 ms. The titles use a small vocabulary, so a
+typical search word matches about 2% of them: harder than real titles.
 
-Every synthetic title has the year `BENCH_YEAR`, a name of the generated shape (`BENCH_NAME_PATTERN`)
-and the video game kind, so the rows can always be found. A real title with the year 9999 as a
-placeholder is not matched, because its name does not have that shape. The script deletes the rows
-at the end (also when it fails) and at the start, in case an earlier run was killed: a `finally`
-block does not run on SIGTERM, SIGHUP or `kill -9`. After each deletion it vacuums, so the dev
-database is not left with the dead rows. The result is printed before the cleanup, and a cleanup
-that fails is reported (exit code 1) without hiding the result.
+Synthetic titles are found by the year `BENCH_YEAR`, a name of the generated shape
+(`BENCH_NAME_PATTERN`) and the video game kind. The script deletes them at the start, in case an
+earlier run was killed (`finally` does not run on SIGTERM, SIGHUP or `kill -9`), and at the end,
+then vacuums. The result is printed before the cleanup, and a cleanup that fails is reported (exit
+code 1) without hiding it.
 
-Only the search is timed: the script holds one connection, warms it up and the query plan first,
-and times `search_titles` per search. A timed search includes the lazy BEGIN and the
-`set_config` of the similarity threshold, which every real request pays too. It does not include
+Only the search is timed, on one warmed-up connection. A timed search includes the lazy BEGIN and
+the `set_config` of the similarity threshold, which every real request pays too. It does not include
 checking a connection out of the pool or a pre-ping.
 
-It refuses to run unless the ENVIRONMENT variable is exactly `local` and DATABASE_URL points at
-this machine, the same rule as `seed_dev.py`.
+It refuses to run unless ENVIRONMENT is exactly `local` and DATABASE_URL points at this machine,
+the same rule as `seed_dev.py`.
 """
 
 import argparse
@@ -211,7 +208,6 @@ async def run(count: int) -> bool:
 async def time_searches(engine: AsyncEngine, queries: list[str]) -> None:
     timed: list[tuple[float, str, int]] = []
     async with engine.connect() as connection:
-        # Warm-up, not timed: the connection, the prepared statements and the plan.
         async with AsyncSession(bind=connection) as warm_up:
             await warm_up.execute(select(1))
             for query in queries:

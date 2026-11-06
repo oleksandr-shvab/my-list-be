@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from app.core.clock import get_now
 from app.core.config import serialize_origin, settings
 
-# Point the whole app at the test services before any module opens a connection, and refuse to
-# run if they are the same as the dev ones (the suite drops tables and flushes Redis).
+# Point the app at the test services before any module opens a connection. Refuse to run if they
+# match the dev ones: the suite drops tables and flushes Redis.
 assert settings.TEST_DATABASE_URL != settings.DATABASE_URL, (
     "TEST_DATABASE_URL must differ from DATABASE_URL"
 )
@@ -27,7 +27,6 @@ from app.main import app
 from app.media.storage import get_media_storage
 from tests.factories import make_local_storage
 
-# An allowed origin (FRONTEND_URL's), sent by the `client` fixture on every request.
 TEST_ORIGIN = serialize_origin(settings.FRONTEND_URL)
 assert TEST_ORIGIN is not None
 
@@ -56,8 +55,7 @@ async def engine() -> AsyncGenerator[AsyncEngine, None]:
 
     test_engine = create_async_engine(settings.TEST_DATABASE_URL)
     async with test_engine.begin() as conn:
-        # The trigram indexes of `titles` need the extension, and `create_all` does not run
-        # the migrations (AC-23).
+        # `create_all` skips migrations; create the extension the trigram indexes need (AC-23).
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.create_all)
 
@@ -87,8 +85,7 @@ async def client(db_session: AsyncSession, tmp_path: Path) -> AsyncGenerator[Asy
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
-    # Media links come from a storage of the tests' own (a temp folder, a fixed key, base URL and
-    # lifetimes), never from the developer's `.env`.
+    # Use a storage of the tests' own, not the developer's `.env`.
     storage = make_local_storage(tmp_path)
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_media_storage] = lambda: storage
@@ -105,8 +102,8 @@ SetNow = Callable[[dt.datetime], None]
 
 @pytest.fixture
 def set_now() -> Generator[SetNow, None, None]:
-    """Fix the server clock. The override is removed at teardown, so a test that never uses
-    `client` cannot leave a frozen clock behind."""
+    """Fix the server clock. Teardown removes the override, so a test without `client` cannot
+    leave it frozen."""
 
     def _set_now(now: dt.datetime) -> None:
         app.dependency_overrides[get_now] = lambda: now
@@ -118,5 +115,5 @@ def set_now() -> Generator[SetNow, None, None]:
 @pytest.fixture(autouse=True)
 async def clean_redis() -> AsyncGenerator[None, None]:
     yield
-    # Safe: the client points at TEST_REDIS_URL, a database the dev server does not use.
+    # Safe: the client points at TEST_REDIS_URL, not the dev Redis.
     await redis_client.flushdb()
