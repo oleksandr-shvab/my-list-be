@@ -1,8 +1,9 @@
 import datetime as dt
 import uuid
+from collections.abc import Collection
 from typing import NamedTuple
 
-from sqlalchemy import ColumnElement, and_, exists, func, select
+from sqlalchemy import ColumnElement, and_, exists, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -108,3 +109,23 @@ async def list_archive_puzzles(
         )
     result = await db.execute(query.order_by(Puzzle.date.desc()).limit(limit))
     return [ArchiveRow(*row) for row in result.all()]
+
+
+async def list_visible_puzzles(
+    db: AsyncSession, *, game_id: int, keys: Collection[tuple[str, dt.date]], today: dt.date
+) -> list[Puzzle]:
+    """The visible puzzles of a game for these `(variant, date)` pairs, each with its answer
+    title and nothing else (no clues, no media), in one query. A pair with no visible puzzle has
+    no row. Enough to replay guesses; never enough to show a view."""
+    if not keys:
+        return []
+    result = await db.execute(
+        select(Puzzle)
+        .where(
+            Puzzle.game_id == game_id,
+            tuple_(Puzzle.variant, Puzzle.date).in_(list(keys)),
+            visible_puzzle_condition(today),
+        )
+        .options(joinedload(Puzzle.answer_title))
+    )
+    return list(result.scalars())

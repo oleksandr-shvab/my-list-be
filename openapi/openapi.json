@@ -221,6 +221,18 @@
             ],
             "title": "Counts For Streak"
           },
+          "daily_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a guest, on the puzzle's own day only: a proof to keep with the local game and send as `daily_proof` in a merge entry. Null for an account and on any other day",
+            "title": "Daily Proof"
+          },
           "date": {
             "format": "date",
             "title": "Date",
@@ -281,6 +293,7 @@
           }
         },
         "required": [
+          "daily_proof",
           "type",
           "slug",
           "variant",
@@ -521,6 +534,132 @@
         "title": "MediaType",
         "type": "string"
       },
+      "MergeCreate": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/MergeEntry"
+            },
+            "maxItems": 500,
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "title": "MergeCreate",
+        "type": "object"
+      },
+      "MergeEntry": {
+        "description": "One finished or running game a guest played in this browser. It has no outcome: the server\nreplays `guesses` and decides (AC-56).",
+        "properties": {
+          "daily_proof": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `daily_proof` of the view the guest got on the puzzle's own day. Without a valid one, `played_as_daily` is not trusted and the game is stored as an archive play",
+            "title": "Daily Proof"
+          },
+          "date": {
+            "description": "The puzzle's day, as YYYY-MM-DD",
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "guesses": {
+            "description": "The guesses of the whole game, in order (null is a skip). A game has at most 6",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maxItems": 20,
+            "title": "Guesses",
+            "type": "array"
+          },
+          "played_as_daily": {
+            "description": "Whether the guest began this game on the puzzle's own day",
+            "title": "Played As Daily",
+            "type": "boolean"
+          },
+          "variant": {
+            "maxLength": 32,
+            "title": "Variant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "variant",
+          "guesses",
+          "played_as_daily"
+        ],
+        "title": "MergeEntry",
+        "type": "object"
+      },
+      "MergeRead": {
+        "description": "What a merge did (AC-60): `stored + already_present + rejected` is the number of entries.",
+        "properties": {
+          "already_present": {
+            "description": "Entries skipped because the account already has a game on that puzzle",
+            "title": "Already Present",
+            "type": "integer"
+          },
+          "daily_unproven": {
+            "description": "Stored entries that said `played_as_daily` with no valid `daily_proof`: they were stored as archive plays (`counts_for_streak` false). Not part of the three counts",
+            "title": "Daily Unproven",
+            "type": "integer"
+          },
+          "rejected": {
+            "description": "Entries left out; see `rejected_entries`",
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "rejected_entries": {
+            "items": {
+              "$ref": "#/components/schemas/RejectedEntryRead"
+            },
+            "title": "Rejected Entries",
+            "type": "array"
+          },
+          "stored": {
+            "description": "Entries that became new stored games",
+            "title": "Stored",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stored",
+          "already_present",
+          "rejected",
+          "daily_unproven",
+          "rejected_entries"
+        ],
+        "title": "MergeRead",
+        "type": "object"
+      },
+      "MergeRejectionCode": {
+        "description": "Why a merge entry was left out (AC-59). The values are error codes of the API.",
+        "enum": [
+          "variant_not_found",
+          "puzzle_not_found",
+          "invalid_guess_history"
+        ],
+        "title": "MergeRejectionCode",
+        "type": "string"
+      },
       "PosterRead": {
         "properties": {
           "content_type": {
@@ -602,6 +741,29 @@
         ],
         "title": "ProgressStatus",
         "type": "string"
+      },
+      "RejectedEntryRead": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/MergeRejectionCode"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "variant",
+          "code"
+        ],
+        "title": "RejectedEntryRead",
+        "type": "object"
       },
       "ResetPasswordRequest": {
         "properties": {
@@ -1591,6 +1753,116 @@
           }
         },
         "summary": "List Archive",
+        "tags": [
+          "games"
+        ]
+      }
+    },
+    "/v1/games/{slug}/progress/merge": {
+      "post": {
+        "operationId": "games_merge_progress",
+        "parameters": [
+          {
+            "description": "The game's slug, for example `game-guesser`",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "description": "The game's slug, for example `game-guesser`",
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "No valid session (`not_authenticated`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Game not found (`game_not_found`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "`validation_error` for a malformed body, or `too_long` for over 500 entries"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "`service_unavailable`: a game of this account was locked by another request too long. Nothing was stored, and the same request can be sent again safely"
+          }
+        },
+        "summary": "Merge Progress",
         "tags": [
           "games"
         ]

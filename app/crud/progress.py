@@ -1,5 +1,6 @@
 import datetime as dt
 import uuid
+from collections.abc import Collection
 from typing import NamedTuple
 
 from sqlalchemy import Select, func, select
@@ -18,7 +19,7 @@ _WITH_GUESSES = selectinload(Progress.guesses).joinedload(ProgressGuess.title)
 
 # How long a request waits for the game's lock (or for another request's uncommitted first
 # insert) before it gives up, so a stuck transaction cannot pile up requests. Postgres reports
-# SQLSTATE 55P03 when it runs out (`is_lock_timeout` in `app/core/db.py`).
+# SQLSTATE 55P03 when it runs out (`is_lock_failure` in `app/core/db.py`).
 LOCK_TIMEOUT_MS = 5000
 
 
@@ -41,13 +42,18 @@ async def get_progress(db: AsyncSession, *, user_id: uuid.UUID, puzzle_id: int) 
     return result.scalar_one_or_none()
 
 
+async def limit_lock_wait(db: AsyncSession) -> None:
+    """Limit, for this transaction only, how long a statement waits for a lock held by another
+    transaction to `LOCK_TIMEOUT_MS`. Postgres then raises SQLSTATE 55P03 (`is_lock_failure`)."""
+    await set_local(db, "lock_timeout", str(LOCK_TIMEOUT_MS))
+
+
 async def lock_progress(db: AsyncSession, *, user_id: uuid.UUID, puzzle_id: int) -> Progress | None:
     """`SELECT ... FOR UPDATE` on the account's game, or None when it has no row yet (AC-45). It
-    starts the locked section: the transaction waits for the lock at most `LOCK_TIMEOUT_MS`
-    (`lock_timeout`, for this transaction only), and the lock lasts until the caller's
-    transaction ends. The guesses are read after the lock is held, so they include what the
-    previous request committed."""
-    await set_local(db, "lock_timeout", str(LOCK_TIMEOUT_MS))
+    starts the locked section, and the lock lasts until the caller's transaction ends. The caller
+    limits the wait first (`limit_lock_wait`, which `_locked_unit` in the service does once per
+    unit). The guesses are read after the lock is held, so they include what the previous request
+    committed."""
     result = await db.execute(_progress_query(user_id, puzzle_id).with_for_update(of=Progress))
     return result.scalar_one_or_none()
 
@@ -107,6 +113,68 @@ async def append_guess(
     if status != ProgressStatus.IN_PROGRESS:
         progress.finished_at = max(now, progress.started_at)
     await db.flush()
+
+
+async def list_owned_puzzle_ids(
+    db: AsyncSession, *, user_id: uuid.UUID, puzzle_ids: Collection[int]
+) -> set[int]:
+    """The ids among `puzzle_ids` that the account already has a game on, in one query. A plain
+    read: no lock, no row created."""
+    if not puzzle_ids:
+        return set()
+    result = await db.execute(
+        select(Progress.puzzle_id).where(
+            Progress.user_id == user_id, Progress.puzzle_id.in_(puzzle_ids)
+        )
+    )
+    return set(result.scalars())
+
+
+async def insert_merged_progress(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    puzzle_id: int,
+    status: ProgressStatus,
+    now: dt.datetime,
+    counts_for_streak: bool,
+    title_ids: list[int | None],
+) -> bool:
+    """Store a guest's game for the account, with `origin` merge (AC-57). Returns False, and
+    changes nothing, when the account already has a game on the puzzle (AC-58): the insert is
+    `INSERT ... ON CONFLICT (user_id, puzzle_id) DO NOTHING`, so a repeat (AC-61), another entry of
+    the same request and a game begun in the meantime all leave the stored row as it is.
+
+    `started_at` is `now`, and so is `finished_at` of a finished game (R-23); the streak uses the
+    puzzle's date, not these times (AC-49). The caller commits.
+
+    A raw `insert` skips ORM instrumentation on purpose: `ON CONFLICT` is the only race-free way
+    to tell "stored" from "already there" (SKILL.md, "Bulk operations").
+    """
+    progress_id = await db.scalar(
+        insert(Progress)
+        .values(
+            user_id=user_id,
+            puzzle_id=puzzle_id,
+            status=status,
+            started_at=now,
+            finished_at=None if status == ProgressStatus.IN_PROGRESS else now,
+            counts_for_streak=counts_for_streak,
+            origin=ProgressOrigin.MERGE,
+        )
+        .on_conflict_do_nothing(index_elements=[Progress.user_id, Progress.puzzle_id])
+        .returning(Progress.id)
+    )
+    if progress_id is None:
+        return False
+    await db.execute(
+        insert(ProgressGuess),
+        [
+            {"progress_id": progress_id, "position": position, "title_id": title_id}
+            for position, title_id in enumerate(title_ids, start=1)
+        ],
+    )
+    return True
 
 
 class PlayRow(NamedTuple):

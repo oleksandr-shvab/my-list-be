@@ -2,10 +2,10 @@ import datetime as dt
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StrictInt
 from pydantic_core import PydanticCustomError
 
-from app.games.enums import ArchiveState, GuessResult, MediaType, ProgressStatus
+from app.games.enums import ArchiveState, GuessResult, MediaType, MergeRejectionCode, ProgressStatus
 
 DATE_FORMAT = "YYYY-MM-DD"
 
@@ -109,6 +109,67 @@ class ResumeCreate(BaseModel):
     previous: Previous
 
 
+# At most this many entries in one merge request (AC-62). A larger history is sent in several
+# requests, which is safe because a merge is idempotent (AC-61).
+MAX_MERGE_ENTRIES = 500
+
+# The length of `puzzles.variant`: a longer name cannot exist, and the cap keeps the rejected list
+# (which repeats each variant) small.
+MAX_VARIANT_LENGTH = 32
+
+# A proof is 43 characters (an unpadded SHA-256 in base64url); the cap only keeps a body small.
+MAX_DAILY_PROOF_LENGTH = 100
+
+
+class MergeEntry(BaseModel):
+    """One finished or running game a guest played in this browser. It has no outcome: the server
+    replays `guesses` and decides (AC-56)."""
+
+    date: StrictDate = Field(description="The puzzle's day, as YYYY-MM-DD")
+    variant: str = Field(max_length=MAX_VARIANT_LENGTH)
+    guesses: Previous = Field(
+        description="The guesses of the whole game, in order (null is a skip). A game has at most 6"
+    )
+    played_as_daily: StrictBool = Field(
+        description="Whether the guest began this game on the puzzle's own day"
+    )
+    daily_proof: str | None = Field(
+        default=None,
+        max_length=MAX_DAILY_PROOF_LENGTH,
+        description=(
+            "The `daily_proof` of the view the guest got on the puzzle's own day. Without a valid "
+            "one, `played_as_daily` is not trusted and the game is stored as an archive play"
+        ),
+    )
+
+
+class MergeCreate(BaseModel):
+    entries: list[MergeEntry] = Field(max_length=MAX_MERGE_ENTRIES)
+
+
+class RejectedEntryRead(BaseModel):
+    date: dt.date
+    variant: str
+    code: MergeRejectionCode
+
+
+class MergeRead(BaseModel):
+    """What a merge did (AC-60): `stored + already_present + rejected` is the number of entries."""
+
+    stored: int = Field(description="Entries that became new stored games")
+    already_present: int = Field(
+        description="Entries skipped because the account already has a game on that puzzle"
+    )
+    rejected: int = Field(description="Entries left out; see `rejected_entries`")
+    daily_unproven: int = Field(
+        description=(
+            "Stored entries that said `played_as_daily` with no valid `daily_proof`: they were "
+            "stored as archive plays (`counts_for_streak` false). Not part of the three counts"
+        )
+    )
+    rejected_entries: list[RejectedEntryRead]
+
+
 class HintRead(BaseModel):
     kind: str
     value: str
@@ -159,7 +220,26 @@ class AnswerRead(BaseModel):
     year: int | None
 
 
-class GameGuesserView(BaseModel):
+class GameViewBase(BaseModel):
+    """What every game's puzzle view has, whatever the game. The service owns these fields, not
+    the game module (the module knows nothing of proofs or the clock), so each defaults here and a
+    new module cannot forget them. Assignment is validated, and the config keeps a defaulted field
+    required in the OpenAPI response schema (always present, maybe null)."""
+
+    model_config = ConfigDict(
+        validate_assignment=True, json_schema_serialization_defaults_required=True
+    )
+
+    daily_proof: str | None = Field(
+        default=None,
+        description=(
+            "For a guest, on the puzzle's own day only: a proof to keep with the local game and "
+            "send as `daily_proof` in a merge entry. Null for an account and on any other day"
+        ),
+    )
+
+
+class GameGuesserView(GameViewBase):
     """The puzzle view of the game guesser. The tag `type` lets later games extend this into a
     union without breaking the game guesser's clients (AC-3). No internal puzzle or progress id
     (AC-5)."""

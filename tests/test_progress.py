@@ -26,7 +26,7 @@ from app.core.exceptions import (
     ServiceUnavailableError,
 )
 from app.crud import progress as progress_crud
-from app.crud.progress import create_progress, lock_progress
+from app.crud.progress import create_progress, limit_lock_wait, lock_progress
 from app.crud.user import delete_user
 from app.games import service
 from app.games.schemas import PuzzleView
@@ -208,7 +208,9 @@ async def _lock_or_create(
     now: dt.datetime,
     counts_for_streak: bool,
 ) -> Progress:
-    """What the service does for a known title: lock the game, creating it if it has no row."""
+    """What the service does for a known title: limit the lock wait (as `_locked_unit` does), then
+    lock the game, creating it if it has no row."""
+    await limit_lock_wait(db)
     progress = await lock_progress(db, user_id=user_id, puzzle_id=puzzle_id)
     if progress is None:
         progress = await create_progress(
@@ -236,9 +238,10 @@ async def _stored_guesses(db: AsyncSession, user: User) -> list[int | None]:
 
 
 def _same_view(view: PuzzleView) -> dict[str, object]:
-    """What a guest and an account must agree on (AC-44): the whole view apart from `signed_in`
-    and `counts_for_streak`. Clue links do not exist yet (M1-18)."""
-    return view.model_dump(exclude={"signed_in", "counts_for_streak"})
+    """What a guest and an account must agree on (AC-44): the whole view apart from `signed_in`,
+    `counts_for_streak` and `daily_proof` (a guest's proof for today's puzzle; an account has none).
+    Clue links do not exist yet (M1-18)."""
+    return view.model_dump(exclude={"signed_in", "counts_for_streak", "daily_proof"})
 
 
 # AC-44: the same sequence of guesses, played as a guest (with a growing `previous`) and as an

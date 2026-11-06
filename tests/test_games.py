@@ -363,6 +363,7 @@ async def test__puzzle_view__has_exactly_the_ac25_keys_and_no_internal_ids(
         "answer",
         "counts_for_streak",
         "signed_in",
+        "daily_proof",
     }
     assert set(body["steps"][0]) == {"step", "hint", "media", "source_url"}
     assert set(body["steps"][0]["media"]) == {

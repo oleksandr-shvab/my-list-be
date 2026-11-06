@@ -17,6 +17,14 @@ class ArchiveState(StrEnum):
     LOST = "lost"
 
 
+class MergeRejectionCode(StrEnum):
+    """Why a merge entry was left out (AC-59). The values are error codes of the API."""
+
+    VARIANT_NOT_FOUND = "variant_not_found"
+    PUZZLE_NOT_FOUND = "puzzle_not_found"
+    INVALID_GUESS_HISTORY = "invalid_guess_history"
+
+
 class GuessResult(StrEnum):
     CORRECT = "correct"
     WRONG = "wrong"
