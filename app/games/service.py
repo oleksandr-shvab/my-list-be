@@ -1,12 +1,14 @@
 import datetime as dt
 import logging
-from dataclasses import replace
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
 
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import utc_today
-from app.core.db import is_lock_timeout
+from app.core.db import is_lock_failure
 from app.core.exceptions import (
     DuplicateGuessError,
     GameNotFoundError,
@@ -23,13 +25,22 @@ from app.crud.progress import (
     append_guess,
     create_progress,
     get_progress,
+    insert_merged_progress,
+    limit_lock_wait,
     list_finished_plays,
+    list_owned_puzzle_ids,
     lock_progress,
 )
-from app.crud.puzzle import ArchiveRow, get_visible_puzzle_with_details, list_archive_puzzles
+from app.crud.puzzle import (
+    ArchiveRow,
+    get_visible_puzzle_with_details,
+    list_archive_puzzles,
+    list_visible_puzzles,
+)
 from app.crud.title import get_titles_by_ids
 from app.crud.title import search_titles as search_titles_in_db
-from app.games.enums import ArchiveState, ProgressStatus
+from app.games import daily_proof
+from app.games.enums import ArchiveState, MergeRejectionCode, ProgressStatus
 from app.games.modules import MODULES
 from app.games.modules.base import (
     ClueData,
@@ -50,7 +61,10 @@ from app.games.schemas import (
     ArchiveList,
     GameList,
     GameRead,
+    MergeEntry,
+    MergeRead,
     PuzzleView,
+    RejectedEntryRead,
     StatsRead,
     TitleList,
     TitleRead,
@@ -59,7 +73,7 @@ from app.games.stats import Play, compute_stats
 from app.media.storage import MediaStorage
 from app.models.game import Game
 from app.models.progress import Progress
-from app.models.puzzle import ClueMediaFile, PuzzleClue
+from app.models.puzzle import ClueMediaFile, Puzzle, PuzzleClue
 from app.models.title import Title, TitleKind
 from app.models.user import User
 
@@ -146,9 +160,7 @@ async def get_puzzle_view(
         db, slug=slug, variant=variant, puzzle_date=puzzle_date, now=now
     )
     state = await _stored_state(db, module, puzzle, puzzle_id, user)
-    return module.get_puzzle(
-        puzzle, state, is_signed_in=user is not None, sign=_media_signer(storage, now)
-    )
+    return _view(module, puzzle, state, is_signed_in=user is not None, now=now, storage=storage)
 
 
 async def resume_puzzle(
@@ -176,9 +188,7 @@ async def resume_puzzle(
             raise InvalidGuessHistoryError()
         titles = await _load_titles(db, puzzle, previous)
         state = _replay_previous(module, puzzle, previous, titles)
-    return module.get_puzzle(
-        puzzle, state, is_signed_in=user is not None, sign=_media_signer(storage, now)
-    )
+    return _view(module, puzzle, state, is_signed_in=user is not None, now=now, storage=storage)
 
 
 async def submit_guess(
@@ -251,7 +261,7 @@ async def _submit_guest_guess(
     # The guest keeps its own copy of the first answer (AC-40), so later requests carry `None`.
     counts_for_streak = utc_today(now) == puzzle.date if not previous else None
     state = replace(state, counts_for_streak=counts_for_streak)
-    return module.get_puzzle(puzzle, state, is_signed_in=False, sign=_media_signer(storage, now))
+    return _view(module, puzzle, state, is_signed_in=False, now=now, storage=storage)
 
 
 async def _submit_account_guess(
@@ -276,7 +286,7 @@ async def _submit_account_guess(
     titles = await _load_titles(db, puzzle, [title_id])
     guess = None if title_id is None else titles.get(title_id)
     is_unknown_title = title_id is not None and guess is None
-    try:
+    async with _locked_unit(db, operation="account guess"):
         progress = await lock_progress(db, user_id=user.id, puzzle_id=puzzle_id)
         if progress is None:
             if is_unknown_title:
@@ -299,26 +309,60 @@ async def _submit_account_guess(
             raise TitleNotFoundError()
         state = _apply_guess(module, puzzle, state, guess)
         await append_guess(db, progress, title_id=title_id, status=state.status, now=now)
-        view = module.get_puzzle(puzzle, state, is_signed_in=True, sign=_media_signer(storage, now))
-        await db.commit()
-    except DBAPIError as error:
-        await _rollback_keeping_the_error(db)
-        if is_lock_timeout(error):
-            raise ServiceUnavailableError() from error
-        raise
-    except Exception:
-        await _rollback_keeping_the_error(db)
-        raise
+        view = _view(module, puzzle, state, is_signed_in=True, now=now, storage=storage)
     return view
 
 
-async def _rollback_keeping_the_error(db: AsyncSession) -> None:
+@asynccontextmanager
+async def _locked_unit(db: AsyncSession, *, operation: str) -> AsyncIterator[None]:
+    """A unit of work that takes row locks and writes: it limits the lock wait, commits when the
+    block ends without an error, and on any error rolls back and re-raises that error. A failing
+    rollback is logged and never replaces it. A lock timeout or a deadlock anywhere in the unit
+    (a lock, an insert, the commit) is 503: nothing was stored, and a retry is safe. After a
+    rollback the session's ORM objects are expired, so nothing reads them again in the request.
+    `operation` names the unit in the log."""
+    try:
+        await limit_lock_wait(db)
+        yield
+        await db.commit()
+    except DBAPIError as error:
+        await _rollback_keeping_the_error(db, operation)
+        if is_lock_failure(error):
+            raise ServiceUnavailableError() from error
+        raise
+    except Exception:
+        await _rollback_keeping_the_error(db, operation)
+        raise
+
+
+async def _rollback_keeping_the_error(db: AsyncSession, operation: str) -> None:
     """Roll back, and never let a failing rollback replace the error being handled: the caller
     re-raises the original. The connection is broken then, and closing the session discards it."""
     try:
         await db.rollback()
     except Exception:
-        logger.warning("Rollback failed after an error in an account guess", exc_info=True)
+        logger.warning("Rollback failed after an error in %s", operation, exc_info=True)
+
+
+def _view(
+    module: GameModule,
+    puzzle: PuzzleData,
+    state: ProgressState,
+    *,
+    is_signed_in: bool,
+    now: dt.datetime,
+    storage: MediaStorage,
+) -> PuzzleView:
+    """The module's view, plus the daily proof for a guest on the puzzle's own day (Q2): the
+    module knows nothing of proofs or the clock. An account and any other day get `null`."""
+    view = module.get_puzzle(
+        puzzle, state, is_signed_in=is_signed_in, sign=_media_signer(storage, now)
+    )
+    if is_signed_in or utc_today(now) != puzzle.date:
+        return view
+    # A validated assignment on a view this call just built (`GameViewBase`).
+    view.daily_proof = daily_proof.sign(puzzle.slug, puzzle.variant, puzzle.date)
+    return view
 
 
 def _apply_guess(
@@ -339,10 +383,14 @@ async def _load_titles(
 ) -> dict[int, TitleData]:
     """The titles of the puzzle's kind among `ids` (skips ignored), in one query. An id that is
     missing, of another kind or too large for a key is not in the result."""
+    return await _load_titles_of_kind(db, TitleKind(puzzle.title_kind), ids)
+
+
+async def _load_titles_of_kind(
+    db: AsyncSession, kind: TitleKind, ids: Iterable[int | None]
+) -> dict[int, TitleData]:
     found = await get_titles_by_ids(
-        db,
-        ids=[entry for entry in ids if entry is not None],
-        kind=TitleKind(puzzle.title_kind),
+        db, ids=[entry for entry in ids if entry is not None], kind=kind
     )
     return {found_id: _title_data(title) for found_id, title in found.items()}
 
@@ -420,7 +468,16 @@ async def _load_puzzle(
     server, AC-5)."""
     game, module = await _resolve_game(db, slug)
     variant = _resolve_variant(game, module, variant)
+    puzzle_data, puzzle_id = await _find_puzzle(
+        db, game, variant=variant, puzzle_date=puzzle_date, now=now
+    )
+    return module, puzzle_data, puzzle_id
 
+
+async def _find_puzzle(
+    db: AsyncSession, game: Game, *, variant: str, puzzle_date: dt.date, now: dt.datetime
+) -> tuple[PuzzleData, int]:
+    """The visible puzzle of a game and variant already resolved, as plain data, and its id."""
     puzzle = await get_visible_puzzle_with_details(
         db,
         game_id=game.id,
@@ -431,16 +488,171 @@ async def _load_puzzle(
     if puzzle is None:
         raise PuzzleNotFoundError()
 
-    puzzle_data = PuzzleData(
+    clues = tuple(_clue_data(clue) for clue in puzzle.clues)
+    return _puzzle_data(game, puzzle, clues=clues), puzzle.id
+
+
+def _puzzle_data(game: Game, puzzle: Puzzle, *, clues: tuple[ClueData, ...]) -> PuzzleData:
+    return PuzzleData(
         slug=game.slug,
         variant=puzzle.variant,
         title_kind=game.title_kind,
         date=puzzle.date,
         number=_puzzle_number(puzzle.date, game),
         answer=_title_data(puzzle.answer_title),
-        clues=tuple(_clue_data(clue) for clue in puzzle.clues),
+        clues=clues,
     )
-    return module, puzzle_data, puzzle.id
+
+
+@dataclass(frozen=True)
+class _ReadyEntry:
+    """An entry that passed every check and waits to be stored."""
+
+    entry: MergeEntry
+    puzzle_id: int
+    status: ProgressStatus
+
+
+async def merge_progress(
+    db: AsyncSession,
+    *,
+    slug: str,
+    now: dt.datetime,
+    user: User,
+    entries: list[MergeEntry],
+) -> MergeRead:
+    """Move a guest's local games into the account (AC-55 to AC-61). Each entry is replayed through
+    the module's own `submit_guess`, so the status comes from the rules and never from the client
+    (AC-56). An entry that names an unknown variant, a puzzle that is not visible, or guesses that
+    are not a game is skipped and reported, and the others still merge (AC-59). A game the account
+    already has is never changed (AC-58), so the same request twice changes nothing (AC-61).
+
+    The game is checked first (`game_not_found` for the whole request). The checks of one entry run
+    in this order:
+    1. the guess count, 1 to `max_guesses`, and the variant: no database yet;
+    2. the visible puzzle (`puzzle_not_found`);
+    3. whether the account already has a game on it: then the entry is `already_present` and is
+       never replayed, valid or not. A replay that answers "valid" or "invalid" for a puzzle the
+       account has not finished would tell a client the answer, with no guess used (AC-58);
+    4. the replay of the guesses (`invalid_guess_history`).
+    `played_as_daily` counts for the streak only with the `daily_proof` of that puzzle (Q2); a claim
+    without a valid proof is stored as an archive play and counted in `daily_unproven`.
+
+    The puzzles come in one query, the titles in one, the owned puzzles in one. Entries are stored
+    sorted by `(variant, date)` whatever the request's order, so two overlapping merges take their
+    row locks in the same order and cannot deadlock. All entries share one transaction and one
+    commit: an unexpected error stores nothing, and a lock timeout or deadlock is 503 with nothing
+    stored, so the request can be sent again."""
+    game, module = await _resolve_game(db, slug)
+    rejections: dict[int, MergeRejectionCode] = {}
+    candidates: list[int] = []
+    for index, entry in enumerate(entries):
+        # No guesses leave nothing to store (R-22); more than a whole lost game is not a game
+        # (AC-39). Checked before anything touches the database.
+        if not 1 <= len(entry.guesses) <= module.max_guesses:
+            rejections[index] = MergeRejectionCode.INVALID_GUESS_HISTORY
+        elif not module.has_variant(entry.variant, default_variant=game.default_variant):
+            rejections[index] = MergeRejectionCode.VARIANT_NOT_FOUND
+        else:
+            candidates.append(index)
+
+    already_present = 0
+    stored = 0
+    daily_unproven = 0
+    async with _locked_unit(db, operation="merge"):
+        puzzles = {
+            (puzzle.variant, puzzle.date): puzzle
+            for puzzle in await list_visible_puzzles(
+                db,
+                game_id=game.id,
+                keys={(entries[index].variant, entries[index].date) for index in candidates},
+                today=utc_today(now),
+            )
+        }
+        owned = await list_owned_puzzle_ids(
+            db, user_id=user.id, puzzle_ids=[puzzle.id for puzzle in puzzles.values()]
+        )
+        replayable: list[int] = []
+        for index in candidates:
+            puzzle = puzzles.get((entries[index].variant, entries[index].date))
+            if puzzle is None:
+                rejections[index] = MergeRejectionCode.PUZZLE_NOT_FOUND
+            elif puzzle.id in owned:
+                already_present += 1
+            else:
+                replayable.append(index)
+
+        # One query for every title of every entry that is replayed: an id that is not a title of
+        # the game's kind is not in the result, so an entry that uses it is invalid.
+        titles = await _load_titles_of_kind(
+            db,
+            TitleKind(game.title_kind),
+            (guess for index in replayable for guess in entries[index].guesses),
+        )
+        ready: list[_ReadyEntry] = []
+        failed_replay: list[int] = []
+        for index in replayable:
+            entry = entries[index]
+            puzzle = puzzles[(entry.variant, entry.date)]
+            try:
+                state = _replay_previous(
+                    module, _puzzle_data(game, puzzle, clues=()), entry.guesses, titles
+                )
+            except InvalidGuessHistoryError:
+                rejections[index] = MergeRejectionCode.INVALID_GUESS_HISTORY
+                failed_replay.append(index)
+                continue
+            ready.append(_ReadyEntry(entry=entry, puzzle_id=puzzle.id, status=state.status))
+
+        # A game the account began after the owned read above (a guess in another tab) must not
+        # be reported as a rejection, and its replay must not answer for it: an entry that failed
+        # the replay on a puzzle the account owns now is `already_present` (AC-58). Read before
+        # this request stores anything, so its own entries are never mistaken for the account's.
+        owned_now = await list_owned_puzzle_ids(
+            db,
+            user_id=user.id,
+            puzzle_ids=[
+                puzzles[(entries[index].variant, entries[index].date)].id for index in failed_replay
+            ],
+        )
+        for index in failed_replay:
+            if puzzles[(entries[index].variant, entries[index].date)].id in owned_now:
+                del rejections[index]
+                already_present += 1
+
+        # A stable sort: of two entries for one puzzle the first one is stored.
+        ready.sort(key=lambda item: (item.entry.variant, item.entry.date))
+        for item in ready:
+            entry = item.entry
+            is_daily = entry.played_as_daily and daily_proof.verify(
+                entry.daily_proof, game.slug, entry.variant, entry.date
+            )
+            is_stored = await insert_merged_progress(
+                db,
+                user_id=user.id,
+                puzzle_id=item.puzzle_id,
+                status=item.status,
+                now=now,
+                counts_for_streak=is_daily,
+                title_ids=entry.guesses,
+            )
+            if not is_stored:
+                already_present += 1
+                continue
+            stored += 1
+            if entry.played_as_daily and not is_daily:
+                daily_unproven += 1
+
+    return MergeRead(
+        stored=stored,
+        already_present=already_present,
+        rejected=len(rejections),
+        daily_unproven=daily_unproven,
+        rejected_entries=[
+            RejectedEntryRead(date=entries[index].date, variant=entries[index].variant, code=code)
+            for index, code in sorted(rejections.items())
+        ],
+    )
 
 
 async def get_stats(

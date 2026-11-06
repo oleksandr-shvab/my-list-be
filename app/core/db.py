@@ -36,11 +36,14 @@ async def set_local(db: AsyncSession, name: str, value: str) -> None:
 
 # SQLSTATE for "lock_timeout expired" (`lock_not_available`).
 LOCK_NOT_AVAILABLE = "55P03"
+# SQLSTATE for "deadlock detected": Postgres aborted this transaction to break a lock cycle.
+DEADLOCK_DETECTED = "40P01"
 
 
-def is_lock_timeout(error: DBAPIError) -> bool:
-    """Whether a database error is Postgres giving up waiting for a lock (`lock_timeout`)."""
-    return getattr(error.orig, "sqlstate", None) == LOCK_NOT_AVAILABLE
+def is_lock_failure(error: DBAPIError) -> bool:
+    """A lock timeout or a deadlock: the transaction stored nothing, and the same request can be
+    sent again."""
+    return getattr(error.orig, "sqlstate", None) in (LOCK_NOT_AVAILABLE, DEADLOCK_DETECTED)
 
 
 def enum_check(column: str, enum: type[StrEnum]) -> str:

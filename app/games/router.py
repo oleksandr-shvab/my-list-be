@@ -11,6 +11,8 @@ from app.games.schemas import (
     ArchiveList,
     GameList,
     GuessCreate,
+    MergeCreate,
+    MergeRead,
     PuzzleView,
     ResumeCreate,
     StatsRead,
@@ -90,6 +92,24 @@ STATS_ERRORS: dict[int | str, dict[str, Any]] = {
     404: {
         "model": ProblemDetails,
         "description": "Game or variant not found (`game_not_found`, `variant_not_found`)",
+    },
+}
+
+# The merge route needs an account, checks the game, and refuses a whole request only for the
+# game, the body or a busy lock: a bad entry is reported in the 200 response instead.
+MERGE_ERRORS: dict[int | str, dict[str, Any]] = {
+    401: {"model": ProblemDetails, "description": "No valid session (`not_authenticated`)"},
+    404: {"model": ProblemDetails, "description": "Game not found (`game_not_found`)"},
+    422: {
+        "model": ProblemDetails,
+        "description": "`validation_error` for a malformed body, or `too_long` for over 500 entries",
+    },
+    503: {
+        "model": ProblemDetails,
+        "description": (
+            "`service_unavailable`: a game of this account was locked by another request too "
+            "long. Nothing was stored, and the same request can be sent again safely"
+        ),
     },
 }
 
@@ -244,3 +264,16 @@ async def get_stats(
 ) -> StatsRead:
     set_cache_control(response, PRIVATE_NO_STORE)
     return await service.get_stats(db, slug=slug, variant=variant, now=now, user=user)
+
+
+@router.post("/{slug}/progress/merge", response_model=MergeRead, responses=MERGE_ERRORS)
+async def merge_progress(
+    slug: Slug,
+    body: MergeCreate,
+    db: SessionDep,
+    response: Response,
+    now: NowDep,
+    user: CurrentUser,
+) -> MergeRead:
+    set_cache_control(response, PRIVATE_NO_STORE)
+    return await service.merge_progress(db, slug=slug, now=now, user=user, entries=body.entries)
