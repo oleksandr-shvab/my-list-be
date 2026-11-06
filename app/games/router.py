@@ -7,6 +7,8 @@ from app.core.clock import NowDep, utc_today
 from app.core.errors import ProblemDetails
 from app.games import service
 from app.games.schemas import (
+    WHOLE_NUMBER,
+    ArchiveList,
     GameList,
     GuessCreate,
     PuzzleView,
@@ -64,6 +66,17 @@ RESUME_ERRORS: dict[int | str, dict[str, Any]] = {
             "`validation_error` for a malformed body or date, or `invalid_guess_history` for a "
             "guest's `previous`"
         ),
+    },
+}
+
+ARCHIVE_ERRORS: dict[int | str, dict[str, Any]] = {
+    404: {
+        "model": ProblemDetails,
+        "description": "`game_not_found` or `variant_not_found`",
+    },
+    422: {
+        "model": ProblemDetails,
+        "description": "`validation_error` for a `limit` outside 1 to 100 or a bad `before`",
     },
 }
 
@@ -131,6 +144,28 @@ async def get_puzzle(
     set_cache_control(response, PRIVATE_NO_STORE)
     return await service.get_puzzle_view(
         db, slug=slug, variant=variant, puzzle_date=date, now=now, user=user, storage=storage
+    )
+
+
+@router.get("/{slug}/archive", response_model=ArchiveList, responses=ARCHIVE_ERRORS)
+async def list_archive(
+    slug: Slug,
+    db: SessionDep,
+    response: Response,
+    now: NowDep,
+    user: OptionalUser,
+    variant: Variant = None,
+    before: Annotated[
+        StrictDate | None,
+        Query(
+            description="Only days before this one, as YYYY-MM-DD. Defaults to, and is capped at, today"
+        ),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=100, description="Page size"), WHOLE_NUMBER] = 30,
+) -> ArchiveList:
+    set_cache_control(response, PRIVATE_NO_STORE)
+    return await service.list_archive(
+        db, slug=slug, variant=variant, before=before, limit=limit, now=now, user=user
     )
 
 

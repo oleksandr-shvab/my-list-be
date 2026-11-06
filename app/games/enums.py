@@ -7,6 +7,16 @@ class ProgressStatus(StrEnum):
     LOST = "lost"
 
 
+class ArchiveState(StrEnum):
+    """What an account's list entry says about its game: the stored statuses plus a game that was
+    never started."""
+
+    NOT_PLAYED = "not_played"
+    IN_PROGRESS = "in_progress"
+    WON = "won"
+    LOST = "lost"
+
+
 class GuessResult(StrEnum):
     CORRECT = "correct"
     WRONG = "wrong"

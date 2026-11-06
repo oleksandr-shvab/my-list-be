@@ -1,9 +1,13 @@
+import datetime as dt
+import decimal
+
 import pytest
 from fastapi import APIRouter
+from fastapi.exceptions import RequestValidationError
 from httpx import ASGITransport, AsyncClient
 
 from app.core import health
-from app.core.errors import field_from_location
+from app.core.errors import _validation_error_items, field_from_location
 from app.main import app
 
 PROBLEM_JSON = "application/problem+json"
@@ -126,3 +130,78 @@ def test__field_from_location__drops_only_the_leading_source(
     location: tuple[str | int, ...], field: str
 ) -> None:
     assert field_from_location(location) == field
+
+
+# Pydantic error types and their context, as `RequestValidationError.errors()` gives them, and the
+# stable item the frontend gets. A type with no entry keeps pydantic's own name.
+@pytest.mark.parametrize(
+    ("error", "item"),
+    [
+        (
+            {"type": "greater_than_equal", "loc": ("query", "limit"), "ctx": {"ge": 1}},
+            {"field": "limit", "code": "too_small", "params": {"min": 1}},
+        ),
+        (
+            {"type": "less_than_equal", "loc": ("query", "limit"), "ctx": {"le": 100}},
+            {"field": "limit", "code": "too_large", "params": {"max": 100}},
+        ),
+        (
+            {"type": "int_parsing", "loc": ("query", "limit")},
+            {"field": "limit", "code": "invalid_type", "params": {}},
+        ),
+        (
+            {"type": "int_parsing_size", "loc": ("query", "limit")},
+            {"field": "limit", "code": "invalid_type", "params": {}},
+        ),
+        # A bound that is not JSON (`ge=date(...)`) is encoded, not left to break the response.
+        (
+            {
+                "type": "greater_than_equal",
+                "loc": ("query", "since"),
+                "ctx": {"ge": dt.date(2026, 1, 1)},
+            },
+            {"field": "since", "code": "too_small", "params": {"min": "2026-01-01"}},
+        ),
+        (
+            {
+                "type": "less_than_equal",
+                "loc": ("query", "price"),
+                "ctx": {"le": decimal.Decimal("9.5")},
+            },
+            {"field": "price", "code": "too_large", "params": {"max": 9.5}},
+        ),
+        # A bound JSON cannot hold (`inf`, `nan`) is left out, so the response still renders.
+        (
+            {"type": "less_than_equal", "loc": ("query", "price"), "ctx": {"le": float("inf")}},
+            {"field": "price", "code": "too_large", "params": {}},
+        ),
+        (
+            {"type": "greater_than_equal", "loc": ("query", "price"), "ctx": {"ge": float("nan")}},
+            {"field": "price", "code": "too_small", "params": {}},
+        ),
+        (
+            {
+                "type": "less_than_equal",
+                "loc": ("query", "price"),
+                "ctx": {"le": decimal.Decimal("Infinity")},
+            },
+            {"field": "price", "code": "too_large", "params": {}},
+        ),
+        (
+            {"type": "string_too_short", "loc": ("body", "password"), "ctx": {"min_length": 8}},
+            {"field": "password", "code": "too_short", "params": {"min": 8}},
+        ),
+        (
+            {"type": "too_long", "loc": ("body", "previous"), "ctx": {"max_length": 20}},
+            {"field": "previous", "code": "too_long", "params": {"max": 20}},
+        ),
+        (
+            {"type": "something_new", "loc": ("body", "x")},
+            {"field": "x", "code": "something_new", "params": {}},
+        ),
+    ],
+)
+def test__validation_error_items__maps_pydantic_types_to_stable_codes(
+    error: dict[str, object], item: dict[str, object]
+) -> None:
+    assert _validation_error_items(RequestValidationError([error])) == [item]

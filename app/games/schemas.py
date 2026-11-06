@@ -3,8 +3,9 @@ import re
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt
+from pydantic_core import PydanticCustomError
 
-from app.games.enums import GuessResult, MediaType, ProgressStatus
+from app.games.enums import ArchiveState, GuessResult, MediaType, ProgressStatus
 
 DATE_FORMAT = "YYYY-MM-DD"
 
@@ -21,6 +22,23 @@ def _strict_date(value: Any) -> dt.date:
 
 
 StrictDate = Annotated[dt.date, BeforeValidator(_strict_date)]
+
+WHOLE_NUMBER_PATTERN = re.compile(r"-?\d+", re.ASCII)
+
+
+def _whole_number(value: Any) -> Any:
+    """A query integer written as plain digits (a leading minus is allowed, so `-1` is `too_small`,
+    not `invalid_type`). Pydantic's lax `int` also reads `1_0`, `+5`, ` 7 `, `100.0` and `1e2`. The
+    error type is `int_type`, so the answer is `invalid_type` like any other non-integer. A string
+    of more than 4300 digits passes here and fails in pydantic as `int_parsing_size`."""
+    if isinstance(value, str) and not WHOLE_NUMBER_PATTERN.fullmatch(value):
+        raise PydanticCustomError("int_type", "Expected a whole number")
+    return value
+
+
+# Metadata for an `int` query parameter, placed after `Query(ge=..., le=...)`: the validator then
+# wraps the whole `int`, bounds included, and the schema keeps `minimum` and `maximum`.
+WHOLE_NUMBER = BeforeValidator(_whole_number)
 
 
 class GameRead(BaseModel):
@@ -48,6 +66,23 @@ class TitleRead(BaseModel):
 
 class TitleList(BaseModel):
     items: list[TitleRead]
+
+
+class ArchiveItem(BaseModel):
+    """One past day of the archive. `state` and `guesses_used` are null for a guest, whose
+    progress lives in the browser (AC-63). No answer and no internal id (AC-5, AC-65)."""
+
+    date: dt.date
+    number: int = Field(description="Days since the game's launch date, plus 1")
+    state: ArchiveState | None = Field(description="Null for a guest")
+    guesses_used: int | None = Field(description="Skips included; null for a guest")
+
+
+class ArchiveList(BaseModel):
+    items: list[ArchiveItem]
+    next_before: dt.date | None = Field(
+        description="The last item's date: send it as `before` for the next page. Null at the end"
+    )
 
 
 # A size guard for the request list, apart from the game rule of AC-39 (5 earlier guesses on a
