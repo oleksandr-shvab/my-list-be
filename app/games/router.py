@@ -2,11 +2,19 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, Response
 
-from app.api.deps import MediaStorageDep, OptionalUser, SessionDep
+from app.api.deps import CurrentUser, MediaStorageDep, OptionalUser, SessionDep
 from app.core.clock import NowDep, utc_today
 from app.core.errors import ProblemDetails
 from app.games import service
-from app.games.schemas import GameList, GuessCreate, PuzzleView, ResumeCreate, StrictDate, TitleList
+from app.games.schemas import (
+    GameList,
+    GuessCreate,
+    PuzzleView,
+    ResumeCreate,
+    StatsRead,
+    StrictDate,
+    TitleList,
+)
 
 router = APIRouter()
 
@@ -61,6 +69,15 @@ RESUME_ERRORS: dict[int | str, dict[str, Any]] = {
 
 GAME_NOT_FOUND: dict[int | str, dict[str, Any]] = {
     404: {"model": ProblemDetails, "description": "Game not found (`game_not_found`)"}
+}
+
+# The stats route needs an account, and checks the game and the variant only.
+STATS_ERRORS: dict[int | str, dict[str, Any]] = {
+    401: {"model": ProblemDetails, "description": "No valid session (`not_authenticated`)"},
+    404: {
+        "model": ProblemDetails,
+        "description": "Game or variant not found (`game_not_found`, `variant_not_found`)",
+    },
 }
 
 Slug = Annotated[str, Path(description="The game's slug, for example `game-guesser`")]
@@ -179,3 +196,16 @@ async def resume_puzzle(
         storage=storage,
         previous=body.previous,
     )
+
+
+@router.get("/{slug}/stats", response_model=StatsRead, responses=STATS_ERRORS)
+async def get_stats(
+    slug: Slug,
+    db: SessionDep,
+    response: Response,
+    now: NowDep,
+    user: CurrentUser,
+    variant: Variant = None,
+) -> StatsRead:
+    set_cache_control(response, PRIVATE_NO_STORE)
+    return await service.get_stats(db, slug=slug, variant=variant, now=now, user=user)

@@ -19,7 +19,13 @@ from app.core.exceptions import (
     VariantNotFoundError,
 )
 from app.crud.game import get_enabled_game_by_slug, list_enabled_games
-from app.crud.progress import append_guess, create_progress, get_progress, lock_progress
+from app.crud.progress import (
+    append_guess,
+    create_progress,
+    get_progress,
+    list_finished_plays,
+    lock_progress,
+)
 from app.crud.puzzle import get_visible_puzzle_with_details
 from app.crud.title import get_titles_by_ids
 from app.crud.title import search_titles as search_titles_in_db
@@ -39,7 +45,8 @@ from app.games.modules.base import (
     TitleKindMismatchError,
 )
 from app.games.normalize import normalize_text
-from app.games.schemas import GameList, GameRead, PuzzleView, TitleList, TitleRead
+from app.games.schemas import GameList, GameRead, PuzzleView, StatsRead, TitleList, TitleRead
+from app.games.stats import Play, compute_stats
 from app.media.storage import MediaStorage
 from app.models.game import Game
 from app.models.progress import Progress
@@ -348,9 +355,7 @@ async def _load_puzzle(
     """The game's module, the visible puzzle as plain data, and its id (which never leaves the
     server, AC-5)."""
     game, module = await _resolve_game(db, slug)
-    variant = variant if variant is not None else game.default_variant
-    if not module.has_variant(variant, default_variant=game.default_variant):
-        raise VariantNotFoundError()
+    variant = _resolve_variant(game, module, variant)
 
     puzzle = await get_visible_puzzle_with_details(
         db,
@@ -373,6 +378,50 @@ async def _load_puzzle(
         clues=tuple(_clue_data(clue) for clue in puzzle.clues),
     )
     return module, puzzle_data, puzzle.id
+
+
+async def get_stats(
+    db: AsyncSession, *, slug: str, variant: str | None, now: dt.datetime, user: User
+) -> StatsRead:
+    """The account's stats in one variant, computed from the stored games on every read (AC-53).
+    The checks run in the order game, variant. The streak fields are None for a variant other than
+    the game's default (AC-51)."""
+    game, module = await _resolve_game(db, slug)
+    variant = _resolve_variant(game, module, variant)
+    today = utc_today(now)
+    rows = await list_finished_plays(
+        db, user_id=user.id, game_id=game.id, variant=variant, today=today
+    )
+    plays = [
+        Play(
+            variant=row.variant,
+            puzzle_date=row.puzzle_date,
+            status=row.status,
+            guesses_used=row.guesses_used,
+            counts_for_streak=row.counts_for_streak,
+        )
+        for row in rows
+    ]
+    stats = compute_stats(
+        plays,
+        today=today,
+        max_guesses=module.max_guesses,
+        variant=variant,
+        default_variant=game.default_variant,
+    )
+    # A puzzle date is one row of this account, game and variant, so it finds the progress row.
+    progress_ids = {row.puzzle_date: row.progress_id for row in rows}
+    for play in stats.unbucketed_wins:
+        # A warning, not an error: the same row would log on every read.
+        logger.warning(
+            "A won play has %s guesses, so it is in no distribution bucket "
+            "(progress %s, user %s, puzzle %s)",
+            play.guesses_used,
+            progress_ids[play.puzzle_date],
+            user.id,
+            play.puzzle_date,
+        )
+    return StatsRead.model_validate(stats, from_attributes=True)
 
 
 def search_query(query: str) -> str | None:
@@ -408,6 +457,15 @@ async def _resolve_game(db: AsyncSession, slug: str) -> tuple[Game, GameModule]:
         logger.debug("Game %r has no module, so it is treated as not found", game.slug)
         raise GameNotFoundError()
     return game, module
+
+
+def _resolve_variant(game: Game, module: GameModule, variant: str | None) -> str:
+    """The variant a request means: the game's default when none is given, else the one asked for
+    if the game has it (`variant_not_found` if not)."""
+    variant = variant if variant is not None else game.default_variant
+    if not module.has_variant(variant, default_variant=game.default_variant):
+        raise VariantNotFoundError()
+    return variant
 
 
 def _title_data(title: Title) -> TitleData:

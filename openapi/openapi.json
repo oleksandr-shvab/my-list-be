@@ -568,6 +568,61 @@
         "title": "ResumeCreate",
         "type": "object"
       },
+      "StatsRead": {
+        "description": "The account's stats in one game variant (AC-46). The win rate is the client's to compute\nfrom `wins` and `played`.",
+        "properties": {
+          "current_streak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a variant that has no streak",
+            "title": "Current Streak"
+          },
+          "distribution": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Wins by guesses used: every key from 1 to `max_guesses`, zeros included",
+            "title": "Distribution",
+            "type": "object"
+          },
+          "max_streak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a variant that has no streak",
+            "title": "Max Streak"
+          },
+          "played": {
+            "description": "Finished games, won or lost, daily and archive alike",
+            "title": "Played",
+            "type": "integer"
+          },
+          "wins": {
+            "title": "Wins",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "played",
+          "wins",
+          "current_streak",
+          "max_streak",
+          "distribution"
+        ],
+        "title": "StatsRead",
+        "type": "object"
+      },
       "StepRead": {
         "properties": {
           "hint": {
@@ -1786,6 +1841,114 @@
           }
         },
         "summary": "Resume Puzzle",
+        "tags": [
+          "games"
+        ]
+      }
+    },
+    "/v1/games/{slug}/stats": {
+      "get": {
+        "operationId": "games_get_stats",
+        "parameters": [
+          {
+            "description": "The game's slug, for example `game-guesser`",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "description": "The game's slug, for example `game-guesser`",
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to the game's default variant",
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the game's default variant",
+              "title": "Variant"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "No valid session (`not_authenticated`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Game or variant not found (`game_not_found`, `variant_not_found`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          }
+        },
+        "summary": "Get Stats",
         "tags": [
           "games"
         ]
