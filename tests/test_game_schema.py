@@ -74,7 +74,9 @@ async def count(db: AsyncSession, model: type) -> int:
 async def puzzle(db_session: AsyncSession) -> Puzzle:
     game = await create_game(db_session)
     (answer,) = await create_titles(db_session, "Half-Life 2")
-    return await create_puzzle(db_session, game=game, answer=answer, puzzle_date=PUZZLE_DATE)
+    return await create_puzzle(
+        db_session, game=game, answer=answer, puzzle_date=PUZZLE_DATE, with_media=False
+    )
 
 
 # games (AC-9)

@@ -356,6 +356,109 @@
         "title": "HintRead",
         "type": "object"
       },
+      "MediaRead": {
+        "description": "The media of one earned step (AC-25). When `expires_at` has passed, ask for the view again\n(AC-73).",
+        "properties": {
+          "expires_at": {
+            "description": "When the links in `sources` stop working",
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "poster": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PosterRead"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The still frame of a video; null for an image"
+          },
+          "sources": {
+            "description": "Use in order: the first one the browser can play. WebM first, MP4 last",
+            "items": {
+              "$ref": "#/components/schemas/MediaSourceRead"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "type": {
+            "$ref": "#/components/schemas/MediaType"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "width",
+          "height",
+          "expires_at",
+          "sources",
+          "poster"
+        ],
+        "title": "MediaRead",
+        "type": "object"
+      },
+      "MediaSourceRead": {
+        "properties": {
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "url": {
+            "description": "A signed link, used as it is: do not prefix it",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "content_type"
+        ],
+        "title": "MediaSourceRead",
+        "type": "object"
+      },
+      "MediaType": {
+        "enum": [
+          "image",
+          "video"
+        ],
+        "title": "MediaType",
+        "type": "string"
+      },
+      "PosterRead": {
+        "properties": {
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "url": {
+            "description": "A signed link to the still frame of a video",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "content_type",
+          "expires_at"
+        ],
+        "title": "PosterRead",
+        "type": "object"
+      },
       "ProblemDetails": {
         "description": "The body of every error response (RFC 9457 plus extension members), see CONTRACTS.md.",
         "properties": {
@@ -477,6 +580,9 @@
               }
             ]
           },
+          "media": {
+            "$ref": "#/components/schemas/MediaRead"
+          },
           "source_url": {
             "anyOf": [
               {
@@ -497,6 +603,7 @@
         "required": [
           "step",
           "hint",
+          "media",
           "source_url"
         ],
         "title": "StepRead",

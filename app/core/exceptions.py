@@ -109,6 +109,29 @@ class PuzzleAlreadyFinishedError(AppException):
     detail = "The puzzle is already finished"
 
 
+class InvalidMediaLinkError(AppException):
+    """A media link that is expired, has a wrong signature or a key of the wrong shape. One answer
+    for all three, so the response says nothing about the file (AC-73)."""
+
+    status_code = 403
+    code = "invalid_media_link"
+    detail = "Invalid or expired media link"
+
+
+class RangeNotSatisfiableError(AppException):
+    """A `Range` header that is malformed or lies outside the file (AC-72b). Only a `<video>`
+    element sees it, so the frontend has no text for it."""
+
+    status_code = 416
+    code = "range_not_satisfiable"
+    detail = "Requested range not satisfiable"
+
+    def __init__(self, size: int) -> None:
+        super().__init__()
+        # The handler (`range_not_satisfiable_handler`) sends it as `Content-Range`.
+        self.size = size
+
+
 class PuzzleDataError(AppException):
     """A scheduled puzzle that breaks a rule of its game (for example a missing step). Not a
     client error: it is a 500 `internal_error`, and the puzzle builder must have caught it before

@@ -24,6 +24,7 @@ async def test__login_with_wrong_password__problem_details_and_request_id(
 
     assert response.status_code == 401
     assert response.headers["content-type"].startswith(PROBLEM_JSON)
+    assert response.headers["x-content-type-options"] == "nosniff"  # On every problem response.
     body = response.json()
     assert body["code"] == "invalid_credentials"
     assert body["status"] == 401
@@ -38,6 +39,7 @@ async def test__validation_error__codes_without_echoing_input(client: AsyncClien
     )
 
     assert response.status_code == 422
+    assert response.headers["x-content-type-options"] == "nosniff"
     body = response.json()
     assert body["code"] == "validation_error"
     assert body["errors"] == [
@@ -65,6 +67,7 @@ async def test__unhandled_exception__json_500_with_request_id() -> None:
         app.openapi_schema = None
 
     assert response.status_code == 500
+    assert response.headers["x-content-type-options"] == "nosniff"  # The global 500 handler too.
     body = response.json()
     assert body["code"] == "internal_error"
     assert body["request_id"] == response.headers["x-request-id"]

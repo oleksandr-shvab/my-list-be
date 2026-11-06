@@ -270,6 +270,8 @@ BASE_SETTINGS = {
     "SECRET_KEY": "x" * 40,
     "FRONTEND_URL": "https://app.example.com",
     "BACKEND_CORS_ORIGINS": [],
+    "MEDIA_SIGNING_KEY": "m" * 40,
+    "MEDIA_LOCAL_BASE_URL": "https://app.example.com/api",
 }
 
 

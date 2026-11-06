@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, enum_check
+from app.games.enums import ClueContentType, ClueRole, MediaType
 from app.models.title import Title
 
 
@@ -25,22 +26,6 @@ class PuzzleStatus(StrEnum):
     IN_REVIEW = "in_review"
     APPROVED = "approved"
     SCHEDULED = "scheduled"
-
-
-class MediaType(StrEnum):
-    IMAGE = "image"
-    VIDEO = "video"
-
-
-class ClueRole(StrEnum):
-    SOURCE = "source"
-    POSTER = "poster"
-
-
-class ClueContentType(StrEnum):
-    IMAGE_WEBP = "image/webp"
-    VIDEO_MP4 = "video/mp4"
-    VIDEO_WEBM = "video/webm"
 
 
 class Puzzle(Base):
@@ -96,6 +81,11 @@ class PuzzleClue(Base):
     hint_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     hint_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Loaded with `joinedload` (see `get_visible_puzzle_with_details`), like the puzzle's relations.
+    media_files: Mapped[list["ClueMediaFile"]] = relationship(
+        order_by="ClueMediaFile.id", lazy="raise", viewonly=True
+    )
 
 
 class ClueMediaFile(Base):

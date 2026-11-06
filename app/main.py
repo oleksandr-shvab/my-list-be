@@ -2,6 +2,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import anyio.to_thread
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,6 +16,7 @@ from app.core.logging import configure_logging
 from app.core.openapi import operation_id
 from app.core.redis import redis_client
 from app.core.request_id import RequestIdMiddleware
+from app.media.storage import build_media_storage
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -22,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Build the media storage (the S3 client) once, off the event loop, so no request pays for it
+    # and a broken storage setting stops the start.
+    await anyio.to_thread.run_sync(build_media_storage)
     yield
     await redis_client.aclose()
     await engine.dispose()

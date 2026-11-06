@@ -20,7 +20,14 @@ from app.games.schemas import PuzzleView
 from app.models.progress import Progress
 from app.models.title import Title
 from tests.conftest import SetNow
-from tests.factories import create_game, create_puzzle
+from tests.factories import (
+    IMAGE_TTL_SECONDS,
+    TEST_MEDIA_BASE_URL,
+    VIDEO_TTL_SECONDS,
+    create_game,
+    create_puzzle,
+    make_local_storage,
+)
 
 NOW = dt.datetime(2026, 11, 3, 12, 0, 0, tzinfo=dt.UTC)
 TODAY = NOW.date()
@@ -98,6 +105,7 @@ async def _guess(
         puzzle_date=puzzle_date,
         now=now,
         user=None,
+        storage=make_local_storage(),
         title_id=_resolve(ids, guess),
         previous=[_resolve(ids, entry) for entry in previous],
     )
@@ -367,7 +375,25 @@ async def test__submit_guess__full_game_leaks_nothing_before_the_end(
                 "franchise": ANSWER_FRANCHISE,
                 "year": 1987,
             }
+        # AC-25: the guess answer carries the signed media of every shown step, as the view does.
+        for step in body["steps"]:
+            media = step["media"]
+            is_video = media["type"] == "video"
+            lifetime = VIDEO_TTL_SECONDS if is_video else IMAGE_TTL_SECONDS
+            assert media["expires_at"] == _expiry(lifetime)
+            assert all(
+                source["url"].startswith(f"{TEST_MEDIA_BASE_URL}/v1/media/")
+                for source in media["sources"]
+            )
+            assert (media["poster"] is not None) is is_video
+            if is_video:
+                assert media["poster"]["url"].startswith(f"{TEST_MEDIA_BASE_URL}/v1/media/")
+                assert media["poster"]["expires_at"] == _expiry(IMAGE_TTL_SECONDS)
         previous.append(_resolve(ids, token))
+
+
+def _expiry(lifetime_seconds: int) -> str:
+    return (NOW + dt.timedelta(seconds=lifetime_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _error(field: str, code: str, **params: int) -> dict[str, object]:

@@ -2,7 +2,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, Response
 
-from app.api.deps import OptionalUser, SessionDep
+from app.api.deps import MediaStorageDep, OptionalUser, SessionDep
 from app.core.clock import NowDep, utc_today
 from app.core.errors import ProblemDetails
 from app.games import service
@@ -85,11 +85,18 @@ async def get_today_puzzle(
     response: Response,
     now: NowDep,
     user: OptionalUser,
+    storage: MediaStorageDep,
     variant: Variant = None,
 ) -> PuzzleView:
     set_cache_control(response, PRIVATE_NO_STORE)
     return await service.get_puzzle_view(
-        db, slug=slug, variant=variant, puzzle_date=utc_today(now), now=now, user=user
+        db,
+        slug=slug,
+        variant=variant,
+        puzzle_date=utc_today(now),
+        now=now,
+        user=user,
+        storage=storage,
     )
 
 
@@ -101,11 +108,12 @@ async def get_puzzle(
     response: Response,
     now: NowDep,
     user: OptionalUser,
+    storage: MediaStorageDep,
     variant: Variant = None,
 ) -> PuzzleView:
     set_cache_control(response, PRIVATE_NO_STORE)
     return await service.get_puzzle_view(
-        db, slug=slug, variant=variant, puzzle_date=date, now=now, user=user
+        db, slug=slug, variant=variant, puzzle_date=date, now=now, user=user, storage=storage
     )
 
 
@@ -131,6 +139,7 @@ async def submit_guess(
     response: Response,
     now: NowDep,
     user: OptionalUser,
+    storage: MediaStorageDep,
     variant: Variant = None,
 ) -> PuzzleView:
     set_cache_control(response, PRIVATE_NO_STORE)
@@ -141,6 +150,7 @@ async def submit_guess(
         puzzle_date=date,
         now=now,
         user=user,
+        storage=storage,
         title_id=body.title_id,
         previous=body.previous,
     )
@@ -155,6 +165,7 @@ async def resume_puzzle(
     response: Response,
     now: NowDep,
     user: OptionalUser,
+    storage: MediaStorageDep,
     variant: Variant = None,
 ) -> PuzzleView:
     set_cache_control(response, PRIVATE_NO_STORE)
@@ -165,5 +176,6 @@ async def resume_puzzle(
         puzzle_date=date,
         now=now,
         user=user,
+        storage=storage,
         previous=body.previous,
     )

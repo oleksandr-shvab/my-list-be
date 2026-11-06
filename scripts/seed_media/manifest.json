@@ -1,0 +1,9 @@
+{
+  "step-1.webp": {"content_type": "image/webp", "width": 640, "height": 360},
+  "step-2.webp": {"content_type": "image/webp", "width": 640, "height": 360},
+  "step-3.webp": {"content_type": "image/webp", "width": 640, "height": 360},
+  "step-4.webp": {"content_type": "image/webp", "width": 640, "height": 360},
+  "step-5.webp": {"content_type": "image/webp", "width": 640, "height": 360},
+  "clip.mp4": {"content_type": "video/mp4", "width": 640, "height": 360, "duration_ms": 12000},
+  "poster.webp": {"content_type": "image/webp", "width": 640, "height": 360}
+}

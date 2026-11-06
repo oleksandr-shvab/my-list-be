@@ -7,7 +7,6 @@ import pytest
 
 from app.games.enums import GuessResult, ProgressStatus
 from app.games.modules.base import (
-    ClueData,
     GameFinishedError,
     ProgressState,
     PuzzleData,
@@ -17,6 +16,7 @@ from app.games.modules.base import (
 )
 from app.games.modules.game_guesser import GameGuesserModule
 from app.games.normalize import normalize_text
+from tests.factories import make_clue
 
 
 def _title(
@@ -65,10 +65,7 @@ def _puzzle(answer: TitleData = TITLES["answer"]) -> PuzzleData:
         date=dt.date(2026, 11, 3),
         number=4,
         answer=answer,
-        clues=tuple(
-            ClueData(step=step, hint_kind=None, hint_value=None, source_url=None)
-            for step in range(1, 7)
-        ),
+        clues=tuple(make_clue(step) for step in range(1, 7)),
     )
 
 
