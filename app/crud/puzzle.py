@@ -1,10 +1,13 @@
 import datetime as dt
+import uuid
+from typing import NamedTuple
 
-from sqlalchemy import ColumnElement, and_, exists, select
+from sqlalchemy import ColumnElement, and_, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.models.game import Game
+from app.models.progress import Progress, ProgressGuess
 from app.models.puzzle import Puzzle, PuzzleClue, PuzzleStatus
 
 
@@ -54,3 +57,54 @@ async def get_visible_puzzle_with_details(
         )
     )
     return result.unique().scalar_one_or_none()
+
+
+class ArchiveRow(NamedTuple):
+    """One past puzzle. `status` and `guesses_used` are read only when the query was made for an
+    account; for a guest the query returns the date alone. For an account, `status` is None when it
+    never started the puzzle."""
+
+    date: dt.date
+    status: str | None = None
+    guesses_used: int | None = None
+
+
+async def list_archive_puzzles(
+    db: AsyncSession,
+    *,
+    game_id: int,
+    variant: str,
+    before: dt.date,
+    today: dt.date,
+    limit: int,
+    user_id: uuid.UUID | None,
+) -> list[ArchiveRow]:
+    """Visible puzzles dated strictly before `before`, newest first: a keyset page (AC-63). The
+    caller asks for `limit + 1` to learn whether there is a next page. Days with no visible puzzle
+    are simply absent (AC-65). With a `user_id`, the account's own progress is left-joined for the
+    status and the number of stored guesses; nothing else of the progress leaves this query. Without
+    one, only the dates are read, and the service decides what a guest sees.
+
+    `before` must not be after `today`: the caller clamps it, and `visible_puzzle_condition` is a
+    second guard, so today and the future can never appear."""
+    where = (
+        Puzzle.game_id == game_id,
+        Puzzle.variant == variant,
+        Puzzle.date < before,
+        visible_puzzle_condition(today),
+    )
+    if user_id is None:
+        query = select(Puzzle.date).where(*where)
+    else:
+        guesses_used = (
+            select(func.count(ProgressGuess.id))
+            .where(ProgressGuess.progress_id == Progress.id)
+            .scalar_subquery()
+        )
+        query = (
+            select(Puzzle.date, Progress.status, guesses_used)
+            .outerjoin(Progress, and_(Progress.puzzle_id == Puzzle.id, Progress.user_id == user_id))
+            .where(*where)
+        )
+    result = await db.execute(query.order_by(Puzzle.date.desc()).limit(limit))
+    return [ArchiveRow(*row) for row in result.all()]

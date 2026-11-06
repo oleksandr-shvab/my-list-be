@@ -43,6 +43,93 @@
         "title": "AnswerRead",
         "type": "object"
       },
+      "ArchiveItem": {
+        "description": "One past day of the archive. `state` and `guesses_used` are null for a guest, whose\nprogress lives in the browser (AC-63). No answer and no internal id (AC-5, AC-65).",
+        "properties": {
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "guesses_used": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Skips included; null for a guest",
+            "title": "Guesses Used"
+          },
+          "number": {
+            "description": "Days since the game's launch date, plus 1",
+            "title": "Number",
+            "type": "integer"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchiveState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a guest"
+          }
+        },
+        "required": [
+          "date",
+          "number",
+          "state",
+          "guesses_used"
+        ],
+        "title": "ArchiveItem",
+        "type": "object"
+      },
+      "ArchiveList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ArchiveItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last item's date: send it as `before` for the next page. Null at the end",
+            "title": "Next Before"
+          }
+        },
+        "required": [
+          "items",
+          "next_before"
+        ],
+        "title": "ArchiveList",
+        "type": "object"
+      },
+      "ArchiveState": {
+        "description": "What an account's list entry says about its game: the stored statuses plus a game that was\nnever started.",
+        "enum": [
+          "not_played",
+          "in_progress",
+          "won",
+          "lost"
+        ],
+        "title": "ArchiveState",
+        "type": "string"
+      },
       "ClockRead": {
         "description": "The server's clock. The client may use it only for display (AC-69).",
         "properties": {
@@ -1373,6 +1460,137 @@
           }
         },
         "summary": "List Games",
+        "tags": [
+          "games"
+        ]
+      }
+    },
+    "/v1/games/{slug}/archive": {
+      "get": {
+        "operationId": "games_list_archive",
+        "parameters": [
+          {
+            "description": "The game's slug, for example `game-guesser`",
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "description": "The game's slug, for example `game-guesser`",
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to the game's default variant",
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the game's default variant",
+              "title": "Variant"
+            }
+          },
+          {
+            "description": "Only days before this one, as YYYY-MM-DD. Defaults to, and is capped at, today",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only days before this one, as YYYY-MM-DD. Defaults to, and is capped at, today",
+              "title": "Before"
+            }
+          },
+          {
+            "description": "Page size",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "description": "Page size",
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "`game_not_found` or `variant_not_found`"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "`validation_error` for a `limit` outside 1 to 100 or a bad `before`"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Unexpected error"
+          }
+        },
+        "summary": "List Archive",
         "tags": [
           "games"
         ]

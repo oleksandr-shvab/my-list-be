@@ -1,8 +1,10 @@
 import logging
+import math
 from collections.abc import Sequence
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -60,6 +62,14 @@ VALIDATION_CODES = {
     "string_type": "invalid_type",
     "int_type": "invalid_type",
     "list_type": "invalid_type",
+    # A number that cannot be read as an integer (`?limit=ten`).
+    "int_parsing": "invalid_type",
+    # The same, for a string of more than 4300 digits (Python's limit on int conversion).
+    "int_parsing_size": "invalid_type",
+    # A number under its `ge` or over its `le`, with the bound in `params`. `gt` and `lt` are not
+    # mapped: no route uses them, and a `min` would wrongly read as inclusive.
+    "greater_than_equal": "too_small",
+    "less_than_equal": "too_large",
     # A body that is not a JSON object.
     "model_attributes_type": "invalid_type",
     "value_error": "invalid_value",
@@ -71,6 +81,8 @@ VALIDATION_PARAMS = {
     "string_too_long": {"max": "max_length"},
     # A list over its `max_length` (the guess body's `previous`).
     "too_long": {"max": "max_length"},
+    "greater_than_equal": {"min": "ge"},
+    "less_than_equal": {"max": "le"},
 }
 
 
@@ -132,10 +144,19 @@ def _validation_error_items(exc: RequestValidationError) -> list[dict[str, Any]]
             field = field_from_location(error["loc"])
         error_type = error["type"]
         code = VALIDATION_CODES.get(error_type, error_type)
+        # A bound is not always JSON: a `ge=date(...)` or a Decimal must not turn the 422 into a
+        # 500 when the response is rendered, and neither must `inf` or `nan`, which JSON cannot
+        # hold (the response refuses them). Such a bound is left out.
         params = {
-            name: context[key]
-            for name, key in VALIDATION_PARAMS.get(error_type, {}).items()
-            if key in context
+            name: value
+            for name, value in jsonable_encoder(
+                {
+                    name: context[key]
+                    for name, key in VALIDATION_PARAMS.get(error_type, {}).items()
+                    if key in context
+                }
+            ).items()
+            if not (isinstance(value, float) and not math.isfinite(value))
         }
         items.append({"field": field, "code": code, "params": params})
     return items

@@ -26,10 +26,10 @@ from app.crud.progress import (
     list_finished_plays,
     lock_progress,
 )
-from app.crud.puzzle import get_visible_puzzle_with_details
+from app.crud.puzzle import ArchiveRow, get_visible_puzzle_with_details, list_archive_puzzles
 from app.crud.title import get_titles_by_ids
 from app.crud.title import search_titles as search_titles_in_db
-from app.games.enums import ProgressStatus
+from app.games.enums import ArchiveState, ProgressStatus
 from app.games.modules import MODULES
 from app.games.modules.base import (
     ClueData,
@@ -45,7 +45,16 @@ from app.games.modules.base import (
     TitleKindMismatchError,
 )
 from app.games.normalize import normalize_text
-from app.games.schemas import GameList, GameRead, PuzzleView, StatsRead, TitleList, TitleRead
+from app.games.schemas import (
+    ArchiveItem,
+    ArchiveList,
+    GameList,
+    GameRead,
+    PuzzleView,
+    StatsRead,
+    TitleList,
+    TitleRead,
+)
 from app.games.stats import Play, compute_stats
 from app.media.storage import MediaStorage
 from app.models.game import Game
@@ -63,6 +72,61 @@ async def list_games(db: AsyncSession) -> GameList:
     games = await list_enabled_games(db)
     # Only games with a module, so the list agrees with the puzzle routes (`game_not_found`).
     return GameList(items=[GameRead.model_validate(game) for game in games if game.slug in MODULES])
+
+
+async def list_archive(
+    db: AsyncSession,
+    *,
+    slug: str,
+    variant: str | None,
+    before: dt.date | None,
+    limit: int,
+    now: dt.datetime,
+    user: User | None,
+) -> ArchiveList:
+    """One page of past puzzles, newest first (AC-63 to AC-65). The checks run in the order game,
+    variant. `before` defaults to today and is clamped to it, so neither today nor a future day
+    can be listed; there is no `puzzle_not_found` here, because a missing day is just left out.
+    An account sees its stored status and guess count, a guest gets nulls."""
+    game, module = await _resolve_game(db, slug)
+    variant = _resolve_variant(game, module, variant)
+
+    today = utc_today(now)
+    rows = await list_archive_puzzles(
+        db,
+        game_id=game.id,
+        variant=variant,
+        before=today if before is None else min(before, today),
+        today=today,
+        # One more than a page, to know whether there is a next one.
+        limit=limit + 1,
+        user_id=None if user is None else user.id,
+    )
+    page = rows[:limit]
+    return ArchiveList(
+        items=[_archive_item(row, game, is_signed_in=user is not None) for row in page],
+        next_before=page[-1].date if len(rows) > limit else None,
+    )
+
+
+def _puzzle_number(puzzle_date: dt.date, game: Game) -> int:
+    """Days since the game's launch date, plus 1 (Q16): the number of the view and of the archive."""
+    return (puzzle_date - game.launch_date).days + 1
+
+
+def _archive_item(row: ArchiveRow, game: Game, *, is_signed_in: bool) -> ArchiveItem:
+    state = None
+    guesses_used = None
+    if is_signed_in:
+        # No progress row means the puzzle was never started.
+        state = ArchiveState.NOT_PLAYED if row.status is None else ArchiveState(row.status)
+        guesses_used = row.guesses_used
+    return ArchiveItem(
+        date=row.date,
+        number=_puzzle_number(row.date, game),
+        state=state,
+        guesses_used=guesses_used,
+    )
 
 
 async def get_puzzle_view(
@@ -372,8 +436,7 @@ async def _load_puzzle(
         variant=puzzle.variant,
         title_kind=game.title_kind,
         date=puzzle.date,
-        # Days since the launch date, plus 1 (Q16).
-        number=(puzzle.date - game.launch_date).days + 1,
+        number=_puzzle_number(puzzle.date, game),
         answer=_title_data(puzzle.answer_title),
         clues=tuple(_clue_data(clue) for clue in puzzle.clues),
     )
