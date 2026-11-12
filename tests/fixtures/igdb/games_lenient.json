@@ -1,0 +1,16 @@
+[
+  {"id": 3001, "name": "Genre Without A Name", "slug": "genre-without-a-name",
+   "genres": [{"id": 3}, {"id": 9, "name": "Puzzle"}]},
+  {"id": 3002, "name": "Company As A Number", "slug": "company-as-a-number",
+   "involved_companies": [
+     {"id": 1, "developer": true, "company": 7},
+     {"id": 2, "developer": true, "company": {"id": 8, "name": "Real Studio"}},
+     "not an object"
+   ]},
+  {"id": 3003, "name": "Null Lists", "slug": "null-lists",
+   "screenshots": null, "genres": null, "release_dates": null},
+  {"id": 3004, "name": "Platform Without A Name", "slug": "platform-without-a-name",
+   "release_dates": [{"id": 1, "date": 984614400, "platform": {"id": 6}}, 7]},
+  {"id": 3005, "name": "Bad Franchise And Series", "slug": "bad-franchise-and-series",
+   "franchise": {"id": 5}, "collections": "not a list"}
+]

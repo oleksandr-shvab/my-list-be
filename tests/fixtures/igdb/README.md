@@ -10,4 +10,7 @@ credentials, run `scripts/igdb_list.py --limit 5` once and compare one real reco
   first game of page 1 has every field.
 - `games_invalid.json`: one record per way to be skipped (AC-8), one record with a good and a bad
   screenshot, and one good record.
+- `games_lenient.json`: valid games with one bad nested item each (a genre with no name, a company
+  given as a number, null lists, a platform with no name, a bad franchise); the game is kept and
+  the item is dropped (AC-8).
 - `error_401.json`, `error_429.json`, `error_503.json`: error bodies.

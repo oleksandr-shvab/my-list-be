@@ -8,7 +8,8 @@ them). A field IGDB does not have for a game is printed as "missing". By default
 with at least 100 ratings, so the fields are likely to be there; `--where` takes any Apicalypse
 condition instead (for example `--where "game_type = 0"`).
 
-Exit code 0 on success, 1 when a setting is missing or IGDB cannot be read (the message says why).
+Exit code 0 on success, 1 when a setting is missing, the condition is refused or IGDB cannot be
+read (the message says why).
 """
 
 import argparse
@@ -17,12 +18,15 @@ import logging
 import sys
 from pathlib import Path
 
+import httpx
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.content.fetch import FetchError
 from app.content.igdb import GameType, IgdbClient, IgdbError, IgdbGame
 from app.content.settings import ContentSettings, MissingSettingError
+from app.core.clock import get_now
 
 MISSING = "missing"
 DEFAULT_WHERE = "total_rating_count >= 100"
@@ -83,17 +87,22 @@ async def list_games(limit: int, where: str) -> int:
     try:
         async with IgdbClient.from_settings(settings) as igdb:
             count = 0
-            async for game in igdb.games(where=where, page_size=limit):
+            async for game in igdb.games(now=get_now(), where=where, page_size=limit):
                 print("\n".join(describe(game)))
                 print()
                 count += 1
                 if count == limit:
                     break
-            skipped = {reason.value: n for reason, n in igdb.skipped.items() if n}
-    except (MissingSettingError, IgdbError, FetchError) as error:
+            skipped = {reason.value: n for reason, n in igdb.skipped.items()}
+            dropped = {reason.value: n for reason, n in igdb.dropped.items()}
+    except (MissingSettingError, IgdbError, FetchError, httpx.HTTPError) as error:
         print(f"igdb_list: {error}", file=sys.stderr)
         return 1
-    print(f"{count} game(s) listed" + (f"; skipped: {skipped}" if skipped else ""))
+    print(f"{count} game(s) listed")
+    if skipped:
+        print(f"records skipped: {skipped}")
+    if dropped:
+        print(f"items dropped from kept records: {dropped}")
     return 0
 
 

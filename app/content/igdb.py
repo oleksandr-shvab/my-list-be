@@ -7,7 +7,9 @@
 The client gets its own Twitch token and renews it once when IGDB refuses it, stays within IGDB's
 limits (4 request starts a second, 8 open requests), retries a bounded number of times, reads whole
 lists by keyset paging and validates every record at the boundary. A record that fails validation
-is skipped and counted (`IgdbClient.skipped`), never raised. IGDB text is data: it is stored and
+is skipped and counted (`IgdbClient.skipped`), never raised; an invalid item inside a list of a valid
+record (a genre with no name, a bad screenshot) is dropped and counted apart (`IgdbClient.dropped`),
+and the record is kept. IGDB text is data: it is stored and
 shown as plain text only. Credentials and the token are never logged or put into an error.
 
 Field and endpoint names were checked against https://api-docs.igdb.com/ on 2026-11-12:
@@ -18,20 +20,32 @@ Field and endpoint names were checked against https://api-docs.igdb.com/ on 2026
 import asyncio
 import datetime as dt
 import logging
+import re
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import IntEnum, StrEnum
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Self, TypeVar
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    ValidationError,
+    ValidationInfo,
+    WrapValidator,
+)
 
 from app.content.fetch import FetchedResponse, build_client, send_capped
 from app.content.settings import ContentSettings
-from app.core.clock import get_now
+from app.core.clock import utc_today
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 GAMES_URL = "https://api.igdb.com/v4/games"
@@ -46,6 +60,9 @@ BACKOFF_BASE_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 60.0
 
 FIRST_YEAR = 1950
+# A caller's condition may not change the paging: no second statement, no sort, limit, offset or
+# field list of its own.
+FORBIDDEN_IN_WHERE = re.compile(r";|\b(?:sort|limit|offset|fields)\b", re.IGNORECASE)
 # `id` always comes back. Nested names are expanded with dots (Apicalypse).
 FIELDS = (
     "name,slug,first_release_date,game_type,version_parent,parent_game,"
@@ -61,12 +78,16 @@ class IgdbError(Exception):
     """The run cannot go on. The message never holds a credential, a token or IGDB text."""
 
 
+class InvalidWhereError(IgdbError):
+    """The caller's `where` condition would change the paging. Raised before any request."""
+
+
 class IgdbAuthError(IgdbError):
     """Twitch refused the credentials, or IGDB refused a freshly renewed token."""
 
 
 class IgdbUnavailable(IgdbError):
-    """IGDB kept answering 429 or 5xx (or not at all) after the last retry."""
+    """IGDB or Twitch kept answering 429 or 5xx (or not at all) after the last retry."""
 
 
 class GameType(IntEnum):
@@ -90,11 +111,25 @@ class GameType(IntEnum):
 
 
 class SkipReason(StrEnum):
+    """Why a whole record was skipped (AC-8)."""
+
     WRONG_SHAPE = "wrong_shape"
     NAME_WITHOUT_LETTERS = "name_without_letters"
     YEAR_OUT_OF_RANGE = "year_out_of_range"
-    # Counts a dropped screenshot; the game itself is kept.
+
+
+class DropReason(StrEnum):
+    """Which kind of item was dropped from a record that was kept. Counted apart from
+    `SkipReason`: a dropped item loses one genre or screenshot, a skipped record loses a game."""
+
     SCREENSHOT_INVALID = "screenshot_invalid"
+    GENRE_INVALID = "genre_invalid"
+    FRANCHISE_INVALID = "franchise_invalid"
+    COLLECTION_INVALID = "collection_invalid"
+    RELEASE_DATE_INVALID = "release_date_invalid"
+    PLATFORM_INVALID = "platform_invalid"
+    INVOLVED_COMPANY_INVALID = "involved_company_invalid"
+    COMPANY_INVALID = "company_invalid"
 
 
 # Strict: a number sent as text, or text sent as a number, is a wrong shape, not a coercion.
@@ -102,8 +137,54 @@ class _Record(BaseModel):
     model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
 
 
+def _count_drop(info: ValidationInfo, reason: DropReason) -> None:
+    """The caller's counter travels in the validation context; with none, a drop is not counted."""
+    if info.context is not None:
+        info.context["drops"][reason] += 1
+
+
+def _lenient_list(item: type[BaseModel], reason: DropReason) -> WrapValidator:
+    """A list that keeps its valid items. An invalid item is dropped and counted, a null list is
+    empty, and a value that is no list at all is one drop and an empty list."""
+
+    def validate(value: Any, _handler: Any, info: ValidationInfo) -> list[Any]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            _count_drop(info, reason)
+            return []
+        kept: list[Any] = []
+        for entry in value:
+            try:
+                kept.append(item.model_validate(entry, context=info.context))
+            except ValidationError:
+                _count_drop(info, reason)
+        return kept
+
+    return WrapValidator(validate)
+
+
+def _lenient_one(item: type[BaseModel], reason: DropReason) -> WrapValidator:
+    """An optional nested object that becomes `None`, counted, when it is invalid."""
+
+    def validate(value: Any, _handler: Any, info: ValidationInfo) -> Any:
+        if value is None:
+            return None
+        try:
+            return item.model_validate(value, context=info.context)
+        except ValidationError:
+            _count_drop(info, reason)
+            return None
+
+    return WrapValidator(validate)
+
+
 class IgdbNamed(_Record):
     id: int
+    name: str
+
+
+class IgdbName(_Record):
     name: str
 
 
@@ -113,7 +194,9 @@ class IgdbPlatform(_Record):
 
 class IgdbReleaseDate(_Record):
     date: int | None = None
-    platform: IgdbPlatform | None = None
+    platform: Annotated[
+        IgdbPlatform | None, _lenient_one(IgdbPlatform, DropReason.PLATFORM_INVALID)
+    ] = None
 
 
 class IgdbCompany(_Record):
@@ -122,7 +205,9 @@ class IgdbCompany(_Record):
 
 class IgdbInvolvedCompany(_Record):
     developer: bool = False
-    company: IgdbCompany | None = None
+    company: Annotated[
+        IgdbCompany | None, _lenient_one(IgdbCompany, DropReason.COMPANY_INVALID)
+    ] = None
 
 
 class IgdbScreenshot(_Record):
@@ -134,6 +219,8 @@ class IgdbScreenshot(_Record):
 
 
 class IgdbGame(_Record):
+    # The record's own fields stay strict: a bad one skips the record (`parse_game`). Everything
+    # nested is lenient.
     id: Annotated[int, Field(gt=0)]
     name: Annotated[str, StringConstraints(strip_whitespace=True)]
     slug: str
@@ -141,16 +228,29 @@ class IgdbGame(_Record):
     game_type: int | None = None
     version_parent: int | None = None
     parent_game: int | None = None
-    franchise: IgdbNamed | None = None
-    franchises: list[IgdbNamed] = []
-    collections: list[IgdbNamed] = []
-    release_dates: list[IgdbReleaseDate] = []
-    genres: list[IgdbNamed] = []
-    involved_companies: list[IgdbInvolvedCompany] = []
+    franchise: Annotated[
+        IgdbNamed | None, _lenient_one(IgdbNamed, DropReason.FRANCHISE_INVALID)
+    ] = None
+    franchises: Annotated[
+        list[IgdbNamed], _lenient_list(IgdbNamed, DropReason.FRANCHISE_INVALID)
+    ] = []
+    collections: Annotated[
+        list[IgdbNamed], _lenient_list(IgdbNamed, DropReason.COLLECTION_INVALID)
+    ] = []
+    release_dates: Annotated[
+        list[IgdbReleaseDate], _lenient_list(IgdbReleaseDate, DropReason.RELEASE_DATE_INVALID)
+    ] = []
+    genres: Annotated[list[IgdbName], _lenient_list(IgdbName, DropReason.GENRE_INVALID)] = []
+    involved_companies: Annotated[
+        list[IgdbInvolvedCompany],
+        _lenient_list(IgdbInvolvedCompany, DropReason.INVOLVED_COMPANY_INVALID),
+    ] = []
     aggregated_rating: float | None = None
     aggregated_rating_count: int | None = None
     total_rating_count: int | None = None
-    screenshots: list[IgdbScreenshot] = []
+    screenshots: Annotated[
+        list[IgdbScreenshot], _lenient_list(IgdbScreenshot, DropReason.SCREENSHOT_INVALID)
+    ] = []
 
     @property
     def release_year(self) -> int | None:
@@ -189,26 +289,22 @@ def release_year(timestamp: int | None) -> int | None:
         return None
 
 
-def parse_game(raw: object, *, max_year: int, skips: Counter[SkipReason]) -> IgdbGame | None:
-    """Validate one raw IGDB record. A bad record returns `None` and adds one count to `skips`;
-    a bad screenshot is dropped and counted, and the game is kept."""
+def parse_game(
+    raw: object,
+    *,
+    max_year: int,
+    skips: Counter[SkipReason],
+    drops: Counter[DropReason],
+) -> IgdbGame | None:
+    """Validate one raw IGDB record. A bad record returns `None` and adds one count to `skips`.
+    A bad nested item is dropped, the game is kept, and the drops are added to `drops` (only for a
+    record that is kept)."""
     if not isinstance(raw, dict):
         skips[SkipReason.WRONG_SHAPE] += 1
         return None
-    screenshots: list[dict[str, Any]] = []
-    dropped = 0
-    raw_screenshots = raw.get("screenshots")
-    if isinstance(raw_screenshots, list):
-        for item in raw_screenshots:
-            try:
-                IgdbScreenshot.model_validate(item)
-            except ValidationError:
-                dropped += 1
-            else:
-                screenshots.append(item)
-        raw = {**raw, "screenshots": screenshots}
+    found: Counter[DropReason] = Counter()
     try:
-        game = IgdbGame.model_validate(raw)
+        game = IgdbGame.model_validate(raw, context={"drops": found})
     except ValidationError:
         skips[SkipReason.WRONG_SHAPE] += 1
         return None
@@ -220,7 +316,7 @@ def parse_game(raw: object, *, max_year: int, skips: Counter[SkipReason]) -> Igd
         if year is None or not FIRST_YEAR <= year <= max_year:
             skips[SkipReason.YEAR_OUT_OF_RANGE] += 1
             return None
-    skips[SkipReason.SCREENSHOT_INVALID] += dropped
+    drops.update(found)
     return game
 
 
@@ -278,7 +374,9 @@ class IgdbClient:
         self._token_lock = asyncio.Lock()
         # In memory only: never written to a file, a log line or an error.
         self._token: SecretStr | None = None
+        # Records skipped, and items dropped from records that were kept, are counted apart.
         self.skipped: Counter[SkipReason] = Counter()
+        self.dropped: Counter[DropReason] = Counter()
 
     @classmethod
     def from_settings(cls, settings: ContentSettings, **kwargs: Any) -> Self:
@@ -303,6 +401,8 @@ class IgdbClient:
         (`id > last`) so a long run does not slow down the way a growing `offset` does."""
         if not 1 <= page_size <= PAGE_SIZE:
             raise ValueError(f"page_size must be 1 to {PAGE_SIZE}")
+        if where is not None and FORBIDDEN_IN_WHERE.search(where):
+            raise InvalidWhereError("where may not hold ';', sort, limit, offset or fields")
         last_id = 0
         while True:
             condition = f"id > {last_id}" if where is None else f"id > {last_id} & ({where})"
@@ -320,45 +420,59 @@ class IgdbClient:
                 return
 
     async def games(
-        self, *, where: str | None = None, page_size: int = PAGE_SIZE
+        self, *, now: dt.datetime, where: str | None = None, page_size: int = PAGE_SIZE
     ) -> AsyncIterator[IgdbGame]:
-        """Valid games in id order; the records that fail validation are counted in `skipped`."""
-        max_year = get_now().year + 1
+        """Valid games in id order. A release year after the year following `now` (UTC) is out of
+        range. Skipped records are counted in `skipped`, dropped items in `dropped`."""
+        max_year = utc_today(now).year + 1
         async for page in self.iter_pages(where=where, page_size=page_size):
             for raw in page:
-                game = parse_game(raw, max_year=max_year, skips=self.skipped)
+                game = parse_game(raw, max_year=max_year, skips=self.skipped, drops=self.dropped)
                 if game is not None:
                     yield game
 
     async def _query(self, body: str) -> list[Any]:
-        retries = 0
         renewed = False
         while True:
-            token = await self._current_token()
+            response, token = await self._retrying("IGDB", lambda: self._send_games(body))
+            if response.status_code == 200:
+                return self._records(response)
+            if response.status_code == 401:
+                if renewed:
+                    raise IgdbAuthError("IGDB refused the token again after it was renewed")
+                renewed = True
+                await self._renew_token(stale=token)
+                continue
+            raise IgdbError(f"IGDB answered {response.status_code}")
+
+    async def _retrying(
+        self, service: str, send: Callable[[], Awaitable[tuple[FetchedResponse, T]]]
+    ) -> tuple[FetchedResponse, T]:
+        """Send until the answer is not 429, 5xx or a failed or corrupt transfer, at most
+        `MAX_RETRIES` retries; then `IgdbUnavailable`. Any other answer, 401 included, is returned
+        for the caller to judge."""
+        retries = 0
+        while True:
             try:
-                response = await self._send(body, token)
-            except httpx.TransportError as error:
+                answer = await send()
+            except httpx.RequestError as error:
                 reason = type(error).__name__
                 retry_after = None
             else:
-                if response.status_code == 200:
-                    return self._records(response)
-                if response.status_code == 401:
-                    if renewed:
-                        raise IgdbAuthError("IGDB refused the token again after it was renewed")
-                    renewed = True
-                    await self._renew_token(stale=token)
-                    continue
-                if response.status_code != 429 and response.status_code < 500:
-                    raise IgdbError(f"IGDB answered {response.status_code}")
-                reason = f"status {response.status_code}"
-                retry_after = response.headers.get("retry-after")
+                status = answer[0].status_code
+                if status != 429 and status < 500:
+                    return answer
+                reason = f"status {status}"
+                retry_after = answer[0].headers.get("retry-after")
             if retries >= MAX_RETRIES:
-                raise IgdbUnavailable(f"IGDB is unavailable: {reason}, after {retries} retries")
+                raise IgdbUnavailable(
+                    f"{service} is unavailable: {reason}, after {retries} retries"
+                )
             delay = retry_delay(retries, retry_after)
             retries += 1
             logger.warning(
-                "IGDB did not answer (%s); retry %d of %d in %.1f s",
+                "%s did not answer (%s); retry %d of %d in %.1f s",
+                service,
                 reason,
                 retries,
                 MAX_RETRIES,
@@ -366,20 +480,22 @@ class IgdbClient:
             )
             await self._sleep(delay)
 
-    async def _send(self, body: str, token: SecretStr) -> FetchedResponse:
-        request = self._http.build_request(
-            "POST",
-            GAMES_URL,
-            content=body,
-            headers={
-                "Client-ID": self._client_id,
-                "Authorization": f"Bearer {token.get_secret_value()}",
-                "Accept": "application/json",
-            },
-        )
+    async def _send_games(self, body: str) -> tuple[FetchedResponse, SecretStr]:
         async with self._open_requests:
             await self._spacer.wait()
-            return await send_capped(self._http, request)
+            # Read after the wait: a request that queued behind a renewal uses the new token.
+            token = await self._current_token()
+            request = self._http.build_request(
+                "POST",
+                GAMES_URL,
+                content=body,
+                headers={
+                    "Client-ID": self._client_id,
+                    "Authorization": f"Bearer {token.get_secret_value()}",
+                    "Accept": "application/json",
+                },
+            )
+            return await send_capped(self._http, request), token
 
     @staticmethod
     def _records(response: FetchedResponse) -> list[Any]:
@@ -403,7 +519,7 @@ class IgdbClient:
             if self._token is None or self._token.get_secret_value() == stale.get_secret_value():
                 self._token = await self._fetch_token()
 
-    async def _fetch_token(self) -> SecretStr:
+    async def _send_token(self) -> tuple[FetchedResponse, None]:
         # The secret goes in the form body, not the URL, so no URL log line can hold it.
         request = self._http.build_request(
             "POST",
@@ -414,12 +530,12 @@ class IgdbClient:
                 "grant_type": "client_credentials",
             },
         )
-        try:
-            response = await send_capped(self._http, request)
-        except httpx.TransportError as error:
-            raise IgdbAuthError(
-                f"the Twitch token request failed: {type(error).__name__}"
-            ) from None
+        return await send_capped(self._http, request), None
+
+    async def _fetch_token(self) -> SecretStr:
+        # Twitch being down is `IgdbUnavailable` after the same retries; only an answer that
+        # refuses the request means the credentials are wrong.
+        response, _ = await self._retrying("Twitch", self._send_token)
         if response.status_code != 200:
             raise IgdbAuthError(f"Twitch refused the token request ({response.status_code})")
         try:

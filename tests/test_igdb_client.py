@@ -23,10 +23,12 @@ from app.content.fetch import (
     send_capped,
 )
 from app.content.igdb import (
+    DropReason,
     IgdbAuthError,
     IgdbClient,
     IgdbError,
     IgdbUnavailable,
+    InvalidWhereError,
     SkipReason,
     parse_game,
 )
@@ -39,7 +41,10 @@ FIXTURE_TOKEN = "fixture-access-token-0001"
 RENEWED_TOKEN = "fixture-access-token-0002"
 # Nothing of this may reach a log line, an exception text or a URL.
 SECRETS = (CLIENT_SECRET, FIXTURE_TOKEN, RENEWED_TOKEN)
+# Fixed, so "next year" is 2027.
+NOW = dt.datetime(2026, 11, 12, tzinfo=dt.UTC)
 MAX_YEAR = 2027
+NOTHING: tuple[dict[str, int], dict[str, int]] = ({}, {})
 
 
 def load(name: str) -> Any:
@@ -52,6 +57,22 @@ def ok(fixture: str) -> httpx.Response:
 
 def failure(status: int, fixture: str, **headers: str) -> httpx.Response:
     return httpx.Response(status, json=load(fixture), headers=headers)
+
+
+def corrupt_gzip_reply() -> httpx.Response:
+    async def body():
+        yield b"this is not gzip"
+
+    return httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=body())
+
+
+def edge_record(game_id: int, released: dt.datetime) -> dict[str, Any]:
+    return {
+        "id": game_id,
+        "name": f"Edge {game_id}",
+        "slug": f"edge-{game_id}",
+        "first_release_date": int(released.timestamp()),
+    }
 
 
 def token_reply(token: str = FIXTURE_TOKEN) -> httpx.Response:
@@ -104,6 +125,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
         "game_calls",
         "token_calls",
         "sleeps",
+        "counted",
     ),
     [
         pytest.param(
@@ -115,6 +137,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             2,
             1,
             [],
+            NOTHING,
             id="two pages are joined in order",
         ),
         pytest.param(
@@ -126,6 +149,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             2,
             2,
             [],
+            NOTHING,
             id="a refused token is renewed once and the request repeated",
         ),
         pytest.param(
@@ -137,6 +161,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             2,
             2,
             [],
+            NOTHING,
             id="a second 401 stops the run",
         ),
         pytest.param(
@@ -148,6 +173,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             2,
             1,
             [3.0],
+            NOTHING,
             id="429 waits for Retry-After and then succeeds",
         ),
         pytest.param(
@@ -159,6 +185,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             6,
             1,
             [1.0, 2.0, 4.0, 8.0, 16.0],
+            NOTHING,
             id="six 503s stop after five retries with growing waits",
         ),
         pytest.param(
@@ -170,6 +197,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             2,
             1,
             [1.0],
+            NOTHING,
             id="a transport error is retried and then succeeds",
         ),
         pytest.param(
@@ -181,6 +209,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             6,
             1,
             [1.0, 2.0, 4.0, 8.0, 16.0],
+            NOTHING,
             id="six transport errors stop after five retries",
         ),
         pytest.param(
@@ -192,6 +221,7 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             1,
             1,
             [],
+            NOTHING,
             id="a redirect is not followed",
         ),
         pytest.param(
@@ -203,12 +233,72 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             1,
             1,
             [],
-            id="bad records are skipped, not raised",
+            (
+                {"wrong_shape": 4, "name_without_letters": 1, "year_out_of_range": 3},
+                {"screenshot_invalid": 3},
+            ),
+            id="bad records are skipped and bad screenshots dropped, each counted apart",
+        ),
+        pytest.param(
+            [ok("games_page_2.json")],
+            [httpx.Response(503, json=load("error_503.json")), token_reply()],
+            2,
+            [1003],
+            None,
+            1,
+            2,
+            [1.0],
+            NOTHING,
+            id="a 503 from the token service is retried, not taken for bad credentials",
+        ),
+        pytest.param(
+            [],
+            [httpx.Response(400, json={"status": 400, "message": "invalid client secret"})],
+            2,
+            [],
+            IgdbAuthError,
+            0,
+            1,
+            [],
+            NOTHING,
+            id="a 400 from the token service is a credentials error, not retried",
+        ),
+        pytest.param(
+            [corrupt_gzip_reply(), ok("games_page_2.json")],
+            None,
+            2,
+            [1003],
+            None,
+            2,
+            1,
+            [1.0],
+            NOTHING,
+            id="a corrupt compressed body is retried",
+        ),
+        pytest.param(
+            [
+                httpx.Response(
+                    200,
+                    json=[
+                        edge_record(4001, dt.datetime(2027, 12, 31, 23, 59, 59, tzinfo=dt.UTC)),
+                        edge_record(4002, dt.datetime(2028, 1, 1, tzinfo=dt.UTC)),
+                    ],
+                )
+            ],
+            None,
+            500,
+            [4001],
+            None,
+            1,
+            1,
+            [],
+            ({"year_out_of_range": 1}, {}),
+            id="next year is accepted and the year after it is skipped",
         ),
     ],
 )
 async def test__igdb_client__scripted_answers(
-    games, tokens, page_size, expected_ids, error, game_calls, token_calls, sleeps, caplog
+    games, tokens, page_size, expected_ids, error, game_calls, token_calls, sleeps, counted, caplog
 ):
     caplog.set_level(logging.DEBUG)
     server = Server(games, tokens)
@@ -221,12 +311,13 @@ async def test__igdb_client__scripted_answers(
     raised: IgdbError | None = None
     async with make_igdb(server, sleep=record_sleep) as igdb:
         try:
-            async for game in igdb.games(page_size=page_size):
+            async for game in igdb.games(now=NOW, page_size=page_size):
                 ids.append(game.id)
         except IgdbError as caught:
             raised = caught
 
     assert ids == expected_ids
+    assert (dict(igdb.skipped), dict(igdb.dropped)) == counted
     assert type(raised) is (error or type(None))
     assert len(server.on("api.igdb.com")) == game_calls
     assert len(server.on("id.twitch.tv")) == token_calls
@@ -260,6 +351,20 @@ async def test__igdb_client__paging_and_token_in_requests():
     first, second = (request.content.decode() for request in plain.on("api.igdb.com"))
     assert "where id > 0;" in first
     assert "where id > 1002;" in second
+
+    # A condition that would change the paging is refused before any request.
+    refused = Server([])
+    async with make_igdb(refused, sleep=no_sleep) as igdb:
+        for where in [
+            "a = 1; b = 2",
+            "a = 1 & sort id desc",
+            "a = 1 & limit 1",
+            "OFFSET 5",
+            "fields *",
+        ]:
+            with pytest.raises(InvalidWhereError):
+                [page async for page in igdb.iter_pages(where=where)]
+    assert refused.requests == []
 
 
 async def test__igdb_client__keeps_the_limits():
@@ -300,6 +405,37 @@ async def test__igdb_client__keeps_the_limits():
     assert all(later - earlier >= 0.25 for earlier, later in itertools.pairwise(starts))
     # 20 callers wait on a slow mock: the peak is the limit, not the number of callers.
     assert most_open == 8
+
+    # A request that waited for its slot while another renewed the token uses the new token.
+    renewed = asyncio.Event()
+    tokens_sent: list[str] = []
+    token_requests: list[httpx.Request] = []
+
+    async def wait_for_the_renewal(seconds: float) -> None:
+        await renewed.wait()
+
+    async def renewing_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "id.twitch.tv":
+            # The first token request opens the run; the second is the renewal.
+            token_requests.append(request)
+            if len(token_requests) == 1:
+                return token_reply()
+            renewed.set()
+            return token_reply(RENEWED_TOKEN)
+        sent = request.headers["Authorization"].removeprefix("Bearer ")
+        tokens_sent.append(sent)
+        if sent == FIXTURE_TOKEN:
+            await asyncio.sleep(0)  # lets the second caller queue behind this request
+            return failure(401, "error_401.json")
+        return httpx.Response(200, json=[])
+
+    async def read_page(igdb: IgdbClient) -> None:
+        async for _ in igdb.iter_pages():
+            pass
+
+    async with make_igdb(renewing_handler, sleep=wait_for_the_renewal) as igdb:
+        await asyncio.gather(read_page(igdb), read_page(igdb))
+    assert tokens_sent.count(FIXTURE_TOKEN) == 1
 
 
 @pytest.mark.parametrize(
@@ -344,7 +480,7 @@ async def test__send_capped__stops_at_the_cap():
 
 def test__parse_game__valid_record_and_each_skip_reason():
     first = load("games_page_1.json")[0]
-    game = parse_game(first, max_year=MAX_YEAR, skips=Counter())
+    game = parse_game(first, max_year=MAX_YEAR, skips=Counter(), drops=Counter())
     assert game is not None
     assert (game.id, game.name, game.release_year, game.game_type) == (
         1001,
@@ -362,27 +498,49 @@ def test__parse_game__valid_record_and_each_skip_reason():
     first_shot = game.screenshots[0]
     assert (first_shot.image_id, first_shot.width, first_shot.height) == ("scaaaa", 1920, 1080)
 
+    def parse(raw: object) -> tuple[Any, dict[str, int], dict[str, int]]:
+        skipped: Counter[SkipReason] = Counter()
+        dropped: Counter[DropReason] = Counter()
+        parsed = parse_game(raw, max_year=MAX_YEAR, skips=skipped, drops=dropped)
+        # `dict`, not a Counter comparison: a zero count must not be there.
+        return parsed, dict(skipped), dict(dropped)
+
+    # A record is skipped (and counted as skipped), or kept with some items dropped (counted apart).
     invalid = load("games_invalid.json")
     expected = [
-        (2001, {SkipReason.SCREENSHOT_INVALID: 3}),
-        (2002, {SkipReason.WRONG_SHAPE: 1}),
-        (2003, {SkipReason.WRONG_SHAPE: 1}),
-        (2004, {SkipReason.WRONG_SHAPE: 1}),
-        (2005, {SkipReason.NAME_WITHOUT_LETTERS: 1}),
-        (2006, {SkipReason.YEAR_OUT_OF_RANGE: 1}),
-        (2007, {SkipReason.YEAR_OUT_OF_RANGE: 1}),
-        (2008, {SkipReason.YEAR_OUT_OF_RANGE: 1}),
-        (None, {SkipReason.WRONG_SHAPE: 1}),
+        (2001, {}, {"screenshot_invalid": 3}),
+        (None, {"wrong_shape": 1}, {}),
+        (None, {"wrong_shape": 1}, {}),
+        (None, {"wrong_shape": 1}, {}),
+        (None, {"name_without_letters": 1}, {}),
+        (None, {"year_out_of_range": 1}, {}),
+        (None, {"year_out_of_range": 1}, {}),
+        (None, {"year_out_of_range": 1}, {}),
+        (None, {"wrong_shape": 1}, {}),
     ]
     assert len(invalid) == len(expected)
-    for raw, (game_id, skips) in zip(invalid, expected, strict=True):
-        counted: Counter[SkipReason] = Counter()
-        parsed = parse_game(raw, max_year=MAX_YEAR, skips=counted)
-        # Only the first record is kept, and it keeps its one good screenshot.
-        assert (parsed.id if parsed else None) == (2001 if game_id == 2001 else None)
-        assert +counted == Counter(skips), raw
+    for raw, (kept_id, skips, drops) in zip(invalid, expected, strict=True):
+        parsed, skipped, dropped = parse(raw)
+        assert (parsed.id if parsed else None) == kept_id, raw
+        assert (skipped, dropped) == (skips, drops), raw
         if parsed:
-            assert [s.image_id for s in parsed.screenshots] == ["sdaaaa"]
+            assert [shot.image_id for shot in parsed.screenshots] == ["sdaaaa"]
+
+    # One bad nested item never costs the game: it is dropped and counted, a null list is empty.
+    lenient = {record["id"]: parse(record) for record in load("games_lenient.json")}
+    assert all(parsed is not None and not skipped for parsed, skipped, _ in lenient.values())
+    assert {game_id: dropped for game_id, (_, _, dropped) in lenient.items()} == {
+        3001: {"genre_invalid": 1},
+        3002: {"company_invalid": 1, "involved_company_invalid": 1},
+        3003: {},
+        3004: {"platform_invalid": 1, "release_date_invalid": 1},
+        3005: {"franchise_invalid": 1, "collection_invalid": 1},
+    }
+    assert [genre.name for genre in lenient[3001][0].genres] == ["Puzzle"]
+    assert lenient[3002][0].developers == ["Real Studio"]
+    assert (lenient[3003][0].screenshots, lenient[3003][0].genres) == ([], [])
+    assert lenient[3004][0].first_release_platforms == []
+    assert (lenient[3005][0].franchise, lenient[3005][0].collections) == (None, [])
 
     # The edges of 1950 to next year, to the second (UTC).
     edges = [
@@ -392,16 +550,9 @@ def test__parse_game__valid_record_and_each_skip_reason():
         (dt.datetime(MAX_YEAR + 1, 1, 1, tzinfo=dt.UTC), True),
     ]
     for moment, is_skipped in edges:
-        counted = Counter()
-        raw = {
-            "id": 3001,
-            "name": "Edge",
-            "slug": "edge",
-            "first_release_date": int(moment.timestamp()),
-        }
-        parsed = parse_game(raw, max_year=MAX_YEAR, skips=counted)
+        parsed, skipped, _ = parse(edge_record(3999, moment))
         assert (parsed is None) is is_skipped, moment
-        assert +counted == (Counter({SkipReason.YEAR_OUT_OF_RANGE: 1}) if is_skipped else Counter())
+        assert skipped == ({"year_out_of_range": 1} if is_skipped else {})
 
 
 def test__content_settings__missing_credential_stops_before_any_request(monkeypatch):

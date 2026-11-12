@@ -5,12 +5,10 @@ deployed-config checks there stay as they are. Only the scripts build this class
 never imports `app/content/`.
 """
 
-from pathlib import Path
-
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+from app.core.config import PROJECT_ROOT
 
 
 class MissingSettingError(Exception):
