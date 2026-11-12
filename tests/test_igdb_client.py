@@ -3,6 +3,7 @@
 No network, no database. The fixtures are in `tests/fixtures/igdb/` (see its README)."""
 
 import asyncio
+import datetime as dt
 import itertools
 import json
 import logging
@@ -22,7 +23,6 @@ from app.content.fetch import (
     send_capped,
 )
 from app.content.igdb import (
-    MAX_OPEN_REQUESTS,
     IgdbAuthError,
     IgdbClient,
     IgdbError,
@@ -62,7 +62,11 @@ class Server:
     """Plays the two hosts from scripts. A request that no script answers fails the test, so a
     loop that never ends is a failure and not a hang."""
 
-    def __init__(self, games: list[httpx.Response], tokens: list[httpx.Response] | None = None):
+    def __init__(
+        self,
+        games: list[httpx.Response | Exception],
+        tokens: list[httpx.Response] | None = None,
+    ):
         self.games = list(games)
         self.tokens = [token_reply()] if tokens is None else list(tokens)
         self.requests: list[httpx.Request] = []
@@ -71,7 +75,10 @@ class Server:
         self.requests.append(request)
         replies = {"id.twitch.tv": self.tokens, "api.igdb.com": self.games}.get(request.url.host)
         assert replies, f"unexpected request to {request.url.host}"
-        return replies.pop(0)
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
     def on(self, host: str) -> list[httpx.Request]:
         return [request for request in self.requests if request.url.host == host]
@@ -155,6 +162,28 @@ def make_igdb(handler: Callable[[httpx.Request], Any], **kwargs: Any) -> IgdbCli
             id="six 503s stop after five retries with growing waits",
         ),
         pytest.param(
+            [httpx.ConnectTimeout("timed out"), ok("games_page_2.json")],
+            None,
+            2,
+            [1003],
+            None,
+            2,
+            1,
+            [1.0],
+            id="a transport error is retried and then succeeds",
+        ),
+        pytest.param(
+            [httpx.ConnectTimeout("timed out")] * 6,
+            None,
+            2,
+            [],
+            IgdbUnavailable,
+            6,
+            1,
+            [1.0, 2.0, 4.0, 8.0, 16.0],
+            id="six transport errors stop after five retries",
+        ),
+        pytest.param(
             [httpx.Response(302, headers={"Location": "https://evil.example/games"})],
             None,
             2,
@@ -224,6 +253,14 @@ async def test__igdb_client__paging_and_token_in_requests():
     assert request.headers["Authorization"] == f"Bearer {FIXTURE_TOKEN}"
     assert request.headers["Client-ID"] == CLIENT_ID
 
+    # The same paging with no condition of the caller's.
+    plain = Server([ok("games_page_1.json"), ok("games_page_2.json")])
+    async with make_igdb(plain, sleep=no_sleep) as igdb:
+        [page async for page in igdb.iter_pages(page_size=2)]
+    first, second = (request.content.decode() for request in plain.on("api.igdb.com"))
+    assert "where id > 0;" in first
+    assert "where id > 1002;" in second
+
 
 async def test__igdb_client__keeps_the_limits():
     now = 0.0
@@ -233,6 +270,7 @@ async def test__igdb_client__keeps_the_limits():
         now += seconds
 
     starts: list[float] = []
+    queries: list[str] = []
     open_now = 0
     most_open = 0
 
@@ -241,6 +279,7 @@ async def test__igdb_client__keeps_the_limits():
         if request.url.host == "id.twitch.tv":
             return token_reply()
         starts.append(now)
+        queries.append(request.content.decode())
         open_now += 1
         most_open = max(most_open, open_now)
         await asyncio.sleep(0.01)
@@ -256,8 +295,11 @@ async def test__igdb_client__keeps_the_limits():
 
     # 20 starts, none sooner than 250 ms after the previous one: at most 4 in any second.
     assert len(starts) == 20
+    # With no page size given, a page is 500 records, IGDB's maximum.
+    assert all("limit 500;" in query for query in queries)
     assert all(later - earlier >= 0.25 for earlier, later in itertools.pairwise(starts))
-    assert most_open <= MAX_OPEN_REQUESTS
+    # 20 callers wait on a slow mock: the peak is the limit, not the number of callers.
+    assert most_open == 8
 
 
 @pytest.mark.parametrize(
@@ -341,6 +383,25 @@ def test__parse_game__valid_record_and_each_skip_reason():
         assert +counted == Counter(skips), raw
         if parsed:
             assert [s.image_id for s in parsed.screenshots] == ["sdaaaa"]
+
+    # The edges of 1950 to next year, to the second (UTC).
+    edges = [
+        (dt.datetime(1949, 12, 31, 23, 59, 59, tzinfo=dt.UTC), True),
+        (dt.datetime(1950, 1, 1, tzinfo=dt.UTC), False),
+        (dt.datetime(MAX_YEAR, 12, 31, 23, 59, 59, tzinfo=dt.UTC), False),
+        (dt.datetime(MAX_YEAR + 1, 1, 1, tzinfo=dt.UTC), True),
+    ]
+    for moment, is_skipped in edges:
+        counted = Counter()
+        raw = {
+            "id": 3001,
+            "name": "Edge",
+            "slug": "edge",
+            "first_release_date": int(moment.timestamp()),
+        }
+        parsed = parse_game(raw, max_year=MAX_YEAR, skips=counted)
+        assert (parsed is None) is is_skipped, moment
+        assert +counted == (Counter({SkipReason.YEAR_OUT_OF_RANGE: 1}) if is_skipped else Counter())
 
 
 def test__content_settings__missing_credential_stops_before_any_request(monkeypatch):
