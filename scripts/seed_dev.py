@@ -81,7 +81,8 @@ HINT_KINDS = [None, "metacritic_score", "platform", "genre", "year", "developer"
 
 @dataclass(frozen=True)
 class SeedPuzzle:
-    days_from_today: int
+    # None for a puzzle that is not scheduled: it has no date (the content tools' rule).
+    days_from_today: int | None
     status: PuzzleStatus
     answer: str
     has_metacritic_hint: bool = True
@@ -93,7 +94,7 @@ PUZZLES = [
     SeedPuzzle(-2, PuzzleStatus.SCHEDULED, "Portal 2", has_metacritic_hint=False),
     SeedPuzzle(-3, PuzzleStatus.SCHEDULED, "Hades"),
     SeedPuzzle(1, PuzzleStatus.SCHEDULED, "Celeste"),
-    SeedPuzzle(2, PuzzleStatus.DRAFT, "Elden Ring"),
+    SeedPuzzle(None, PuzzleStatus.DRAFT, "Elden Ring"),
 ]
 
 
@@ -187,9 +188,8 @@ async def seed(db: AsyncSession, today: dt.date, *, media_dir: Path) -> None:
         puzzle = Puzzle(
             game_id=game.id,
             variant=DEFAULT_VARIANT,
-            # A puzzle that is not scheduled has no date (the content tools' rule).
             date=None
-            if seed_puzzle.status != PuzzleStatus.SCHEDULED
+            if seed_puzzle.days_from_today is None
             else today + dt.timedelta(days=seed_puzzle.days_from_today),
             status=seed_puzzle.status,
             answer_title_id=titles[seed_puzzle.answer].id,

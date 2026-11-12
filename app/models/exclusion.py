@@ -14,13 +14,23 @@ class AnswerExclusion(Base):
     __tablename__ = "answer_exclusions"
     __table_args__ = (
         CheckConstraint(enum_check("reason", ExclusionReason), name="reason"),
-        Index("ix_answer_exclusions_game_id_title_id", "game_id", "title_id"),
+        CheckConstraint("build_slot IS NULL OR build_slot > 0", name="build_slot_positive"),
+        CheckConstraint(
+            f"reason <> '{ExclusionReason.REBUILD}' OR build_slot IS NOT NULL",
+            name="rebuild_has_slot",
+        ),
+        CheckConstraint(
+            f"reason <> '{ExclusionReason.NEVER}' OR build_slot IS NULL", name="never_has_no_slot"
+        ),
+        Index("ix_answer_exclusions_game_id_variant_title_id", "game_id", "variant", "title_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     game_id: Mapped[int] = mapped_column(
         ForeignKey("games.id", ondelete="RESTRICT"), nullable=False
     )
+    # A build slot is unique per game and variant, so a `rebuild` row names the variant too.
+    variant: Mapped[str] = mapped_column(String(32), nullable=False)
     title_id: Mapped[int] = mapped_column(
         ForeignKey("titles.id", ondelete="RESTRICT"), nullable=False
     )

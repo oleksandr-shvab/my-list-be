@@ -43,6 +43,40 @@ def new_game(**overrides: object) -> Game:
     return Game(**values)
 
 
+def new_puzzle(like: Puzzle, **overrides: object) -> Puzzle:
+    """A draft with no date, in the game, variant and answer of `like`."""
+    values: dict[str, object] = {
+        "game_id": like.game_id,
+        "variant": like.variant,
+        "date": None,
+        "status": "draft",
+        "answer_title_id": like.answer_title_id,
+    }
+    values.update(overrides)
+    return Puzzle(**values)
+
+
+def new_title(**overrides: object) -> Title:
+    values: dict[str, object] = {
+        "kind": "video_game",
+        "name": "Portal",
+        "normalized_name": "portal",
+    }
+    values.update(overrides)
+    return Title(**values)
+
+
+def new_exclusion(like: Puzzle, **overrides: object) -> AnswerExclusion:
+    values: dict[str, object] = {
+        "game_id": like.game_id,
+        "variant": like.variant,
+        "title_id": like.answer_title_id,
+        "reason": "never",
+    }
+    values.update(overrides)
+    return AnswerExclusion(**values)
+
+
 def new_media(clue_id: int, **overrides: object) -> ClueMediaFile:
     values: dict[str, object] = {
         "clue_id": clue_id,
@@ -156,74 +190,79 @@ async def test__puzzle__same_game_variant_and_date_is_rejected(
     await assert_rejected(db_session, duplicate, "uq_puzzles_game_id_variant_date")
 
 
-async def test__puzzle__drafts_and_approved_puzzles_without_a_date_are_accepted(
+async def test__content_rows__valid_rows_without_a_date_or_with_a_slot_are_accepted(
     db_session: AsyncSession, puzzle: Puzzle
 ) -> None:
-    for status in ("draft", "draft", "approved"):
-        db_session.add(
-            Puzzle(
-                game_id=puzzle.game_id,
-                variant=puzzle.variant,
-                date=None,
-                status=status,
-                answer_title_id=puzzle.answer_title_id,
-            )
-        )
+    db_session.add_all(
+        [
+            new_puzzle(puzzle, status="draft"),
+            new_puzzle(puzzle, status="draft"),
+            new_puzzle(puzzle, status="approved", build_slot=1),
+            new_exclusion(puzzle, reason="rebuild", build_slot=1, image_ids=["a1", "b2"]),
+            new_exclusion(puzzle, reason="never"),
+        ]
+    )
     await db_session.flush()
 
     assert await count(db_session, Puzzle) == 4
+    assert await count(db_session, AnswerExclusion) == 2
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        "scheduled_without_date",
-        "slot_zero",
-        "slot_taken",
-        "igdb_id_taken",
-        "exclusion_reason",
-    ],
-)
+# (a row that must already exist, the rule-breaking row, the constraint it hits)
+CONTENT_REJECTIONS = {
+    "scheduled_without_date": (
+        None,
+        lambda puzzle: new_puzzle(puzzle, status="scheduled"),
+        "ck_puzzles_scheduled_has_date",
+    ),
+    "slot_zero": (
+        None,
+        lambda puzzle: new_puzzle(puzzle, build_slot=0),
+        "ck_puzzles_build_slot_positive",
+    ),
+    "slot_taken": (
+        lambda puzzle: new_puzzle(puzzle, build_slot=7),
+        lambda puzzle: new_puzzle(puzzle, build_slot=7),
+        "uq_puzzles_game_id_variant_build_slot",
+    ),
+    "igdb_id_taken": (
+        lambda puzzle: new_title(igdb_id=1942),
+        lambda puzzle: new_title(igdb_id=1942, name="Other", normalized_name="other"),
+        "uq_titles_igdb_id",
+    ),
+    "exclusion_reason": (
+        None,
+        lambda puzzle: new_exclusion(puzzle, reason="maybe"),
+        "ck_answer_exclusions_reason",
+    ),
+    "exclusion_slot_zero": (
+        None,
+        lambda puzzle: new_exclusion(puzzle, reason="rebuild", build_slot=0),
+        "ck_answer_exclusions_build_slot_positive",
+    ),
+    "rebuild_without_slot": (
+        None,
+        lambda puzzle: new_exclusion(puzzle, reason="rebuild"),
+        "ck_answer_exclusions_rebuild_has_slot",
+    ),
+    "never_with_slot": (
+        None,
+        lambda puzzle: new_exclusion(puzzle, reason="never", build_slot=3),
+        "ck_answer_exclusions_never_has_no_slot",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(CONTENT_REJECTIONS))
 async def test__content_columns__rule_breaking_row_is_rejected(
     db_session: AsyncSession, puzzle: Puzzle, case: str
 ) -> None:
-    def new_puzzle(**overrides: object) -> Puzzle:
-        values: dict[str, object] = {
-            "game_id": puzzle.game_id,
-            "variant": puzzle.variant,
-            "date": None,
-            "status": "draft",
-            "answer_title_id": puzzle.answer_title_id,
-        }
-        values.update(overrides)
-        return Puzzle(**values)
+    existing, bad_row, constraint = CONTENT_REJECTIONS[case]
+    if existing is not None:
+        db_session.add(existing(puzzle))
+        await db_session.flush()
 
-    rows: dict[str, tuple[object, str]] = {
-        "scheduled_without_date": (
-            new_puzzle(status="scheduled"),
-            "ck_puzzles_scheduled_has_date",
-        ),
-        "slot_zero": (new_puzzle(build_slot=0), "ck_puzzles_build_slot_positive"),
-        "slot_taken": (new_puzzle(build_slot=7), "uq_puzzles_game_id_variant_build_slot"),
-        "igdb_id_taken": (
-            Title(kind="video_game", name="Portal", normalized_name="portal", igdb_id=1942),
-            "uq_titles_igdb_id",
-        ),
-        "exclusion_reason": (
-            AnswerExclusion(
-                game_id=puzzle.game_id, title_id=puzzle.answer_title_id, reason="maybe"
-            ),
-            "ck_answer_exclusions_reason",
-        ),
-    }
-    if case == "slot_taken":
-        puzzle.build_slot = 7
-    if case == "igdb_id_taken":
-        (await db_session.get(Title, puzzle.answer_title_id)).igdb_id = 1942  # type: ignore[union-attr]
-    await db_session.flush()
-    row, constraint = rows[case]
-
-    await assert_rejected(db_session, row, constraint)
+    await assert_rejected(db_session, bad_row(puzzle), constraint)
 
 
 async def test__puzzle__same_date_in_another_variant_or_game_is_accepted(

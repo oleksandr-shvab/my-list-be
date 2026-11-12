@@ -22,6 +22,7 @@ def upgrade() -> None:
         "answer_exclusions",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("game_id", sa.Integer(), nullable=False),
+        sa.Column("variant", sa.String(length=32), nullable=False),
         sa.Column("title_id", sa.Integer(), nullable=False),
         sa.Column("reason", sa.String(length=16), nullable=False),
         sa.Column("build_slot", sa.Integer(), nullable=True),
@@ -34,6 +35,18 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "reason IN ('rebuild', 'never')", name=op.f("ck_answer_exclusions_reason")
+        ),
+        sa.CheckConstraint(
+            "build_slot IS NULL OR build_slot > 0",
+            name=op.f("ck_answer_exclusions_build_slot_positive"),
+        ),
+        sa.CheckConstraint(
+            "reason <> 'rebuild' OR build_slot IS NOT NULL",
+            name=op.f("ck_answer_exclusions_rebuild_has_slot"),
+        ),
+        sa.CheckConstraint(
+            "reason <> 'never' OR build_slot IS NULL",
+            name=op.f("ck_answer_exclusions_never_has_no_slot"),
         ),
         sa.ForeignKeyConstraint(
             ["game_id"],
@@ -50,9 +63,9 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_answer_exclusions")),
     )
     op.create_index(
-        "ix_answer_exclusions_game_id_title_id",
+        "ix_answer_exclusions_game_id_variant_title_id",
         "answer_exclusions",
-        ["game_id", "title_id"],
+        ["game_id", "variant", "title_id"],
         unique=False,
     )
     op.add_column(
@@ -79,14 +92,22 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Putting NOT NULL back on `puzzles.date` fails on a draft with no date. A downgrade never
-    # deletes or invents data, so it stops here and says why, before anything is changed.
-    undated = op.get_bind().execute(sa.text("SELECT count(*) FROM puzzles WHERE date IS NULL"))
-    count = undated.scalar_one()
-    if count:
-        raise RuntimeError(
-            f"Cannot downgrade: {count} puzzle(s) have no date. Schedule them or delete them first."
-        )
+    # The downgrade drops the Phase 3 content table and columns with their data. The one thing it
+    # refuses is a puzzle with no date, because `puzzles.date` cannot be NOT NULL again while one
+    # exists, and it will not invent a date. It is a DO block, not a Python query, so it also runs
+    # (and raises) from `alembic ... --sql`.
+    op.execute(
+        """
+        DO $$
+        DECLARE undated integer;
+        BEGIN
+            SELECT count(*) INTO undated FROM puzzles WHERE date IS NULL;
+            IF undated > 0 THEN
+                RAISE EXCEPTION 'Cannot downgrade: % puzzle(s) have no date. Schedule them or delete them first.', undated;
+            END IF;
+        END $$
+        """
+    )
     op.drop_constraint(op.f("uq_titles_igdb_id"), "titles", type_="unique")
     op.drop_column("titles", "igdb_id")
     op.drop_constraint(op.f("ck_puzzles_scheduled_has_date"), "puzzles", type_="check")
@@ -97,5 +118,5 @@ def downgrade() -> None:
     op.drop_column("puzzles", "generator_version")
     op.drop_column("puzzles", "build_slot")
     op.drop_column("puzzle_clues", "source_image_ids")
-    op.drop_index("ix_answer_exclusions_game_id_title_id", table_name="answer_exclusions")
+    op.drop_index("ix_answer_exclusions_game_id_variant_title_id", table_name="answer_exclusions")
     op.drop_table("answer_exclusions")
