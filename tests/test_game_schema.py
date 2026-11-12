@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud.title import create_title
+from app.models.exclusion import AnswerExclusion
 from app.models.game import Game
 from app.models.puzzle import ClueMediaFile, Puzzle, PuzzleClue
 from app.models.title import Title
@@ -153,6 +154,76 @@ async def test__puzzle__same_game_variant_and_date_is_rejected(
     )
 
     await assert_rejected(db_session, duplicate, "uq_puzzles_game_id_variant_date")
+
+
+async def test__puzzle__drafts_and_approved_puzzles_without_a_date_are_accepted(
+    db_session: AsyncSession, puzzle: Puzzle
+) -> None:
+    for status in ("draft", "draft", "approved"):
+        db_session.add(
+            Puzzle(
+                game_id=puzzle.game_id,
+                variant=puzzle.variant,
+                date=None,
+                status=status,
+                answer_title_id=puzzle.answer_title_id,
+            )
+        )
+    await db_session.flush()
+
+    assert await count(db_session, Puzzle) == 4
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "scheduled_without_date",
+        "slot_zero",
+        "slot_taken",
+        "igdb_id_taken",
+        "exclusion_reason",
+    ],
+)
+async def test__content_columns__rule_breaking_row_is_rejected(
+    db_session: AsyncSession, puzzle: Puzzle, case: str
+) -> None:
+    def new_puzzle(**overrides: object) -> Puzzle:
+        values: dict[str, object] = {
+            "game_id": puzzle.game_id,
+            "variant": puzzle.variant,
+            "date": None,
+            "status": "draft",
+            "answer_title_id": puzzle.answer_title_id,
+        }
+        values.update(overrides)
+        return Puzzle(**values)
+
+    rows: dict[str, tuple[object, str]] = {
+        "scheduled_without_date": (
+            new_puzzle(status="scheduled"),
+            "ck_puzzles_scheduled_has_date",
+        ),
+        "slot_zero": (new_puzzle(build_slot=0), "ck_puzzles_build_slot_positive"),
+        "slot_taken": (new_puzzle(build_slot=7), "uq_puzzles_game_id_variant_build_slot"),
+        "igdb_id_taken": (
+            Title(kind="video_game", name="Portal", normalized_name="portal", igdb_id=1942),
+            "uq_titles_igdb_id",
+        ),
+        "exclusion_reason": (
+            AnswerExclusion(
+                game_id=puzzle.game_id, title_id=puzzle.answer_title_id, reason="maybe"
+            ),
+            "ck_answer_exclusions_reason",
+        ),
+    }
+    if case == "slot_taken":
+        puzzle.build_slot = 7
+    if case == "igdb_id_taken":
+        (await db_session.get(Title, puzzle.answer_title_id)).igdb_id = 1942  # type: ignore[union-attr]
+    await db_session.flush()
+    row, constraint = rows[case]
+
+    await assert_rejected(db_session, row, constraint)
 
 
 async def test__puzzle__same_date_in_another_variant_or_game_is_accepted(
