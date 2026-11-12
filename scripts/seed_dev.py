@@ -187,7 +187,10 @@ async def seed(db: AsyncSession, today: dt.date, *, media_dir: Path) -> None:
         puzzle = Puzzle(
             game_id=game.id,
             variant=DEFAULT_VARIANT,
-            date=today + dt.timedelta(days=seed_puzzle.days_from_today),
+            # A puzzle that is not scheduled has no date (the content tools' rule).
+            date=None
+            if seed_puzzle.status != PuzzleStatus.SCHEDULED
+            else today + dt.timedelta(days=seed_puzzle.days_from_today),
             status=seed_puzzle.status,
             answer_title_id=titles[seed_puzzle.answer].id,
         )

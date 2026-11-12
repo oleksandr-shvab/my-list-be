@@ -46,3 +46,10 @@ class ClueContentType(StrEnum):
     IMAGE_WEBP = "image/webp"
     VIDEO_MP4 = "video/mp4"
     VIDEO_WEBM = "video/webm"
+
+
+class ExclusionReason(StrEnum):
+    """Why a title is held back as an answer: `rebuild` for one slot, `never` for good."""
+
+    REBUILD = "rebuild"
+    NEVER = "never"

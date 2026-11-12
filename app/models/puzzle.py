@@ -2,6 +2,7 @@ import datetime as dt
 from enum import StrEnum
 
 from sqlalchemy import (
+    ARRAY,
     BigInteger,
     CheckConstraint,
     Date,
@@ -32,7 +33,13 @@ class Puzzle(Base):
     __tablename__ = "puzzles"
     __table_args__ = (
         UniqueConstraint("game_id", "variant", "date"),
+        UniqueConstraint("game_id", "variant", "build_slot"),
         CheckConstraint(enum_check("status", PuzzleStatus), name="status"),
+        # Only a scheduled puzzle needs a date; a draft or an approved one has none yet.
+        CheckConstraint(
+            f"status <> '{PuzzleStatus.SCHEDULED}' OR date IS NOT NULL", name="scheduled_has_date"
+        ),
+        CheckConstraint("build_slot > 0", name="build_slot_positive"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -40,8 +47,13 @@ class Puzzle(Base):
         ForeignKey("games.id", ondelete="RESTRICT"), nullable=False
     )
     variant: Mapped[str] = mapped_column(String(32), nullable=False)
-    date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The builder's records: the number of the slot the puzzle was built for, the version of the
+    # choice logic that built it, and when the reviewer approved it.
+    build_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    generator_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # RESTRICT: a title that is the answer of a puzzle cannot be deleted (AC-11).
     answer_title_id: Mapped[int] = mapped_column(
         ForeignKey("titles.id", ondelete="RESTRICT"), index=True, nullable=False
@@ -80,6 +92,8 @@ class PuzzleClue(Base):
     hint_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     hint_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The IGDB image ids the clue was made from. For the builder's records, never in a response.
+    source_image_ids: Mapped[list[str] | None] = mapped_column(ARRAY(String(32)), nullable=True)
 
     media_files: Mapped[list["ClueMediaFile"]] = relationship(
         order_by="ClueMediaFile.id", lazy="raise", viewonly=True
