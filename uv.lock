@@ -181,6 +181,7 @@ wheels = [
 name = "daily-game-challenge-be"
 version = "0.1.0"
 source = { virtual = "." }
+default-groups = ["content", "dev"]
 dependencies = [
     { name = "alembic" },
     { name = "argon2-cffi" },
@@ -196,8 +197,10 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-dev = [
+content = [
     { name = "httpx" },
+]
+dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -219,8 +222,8 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+content = [{ name = "httpx", specifier = ">=0.28.1" }]
 dev = [
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "ruff", specifier = ">=0.16.4" },
