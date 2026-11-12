@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1003,
+    "name": "Placeholder Puzzle",
+    "slug": "placeholder-puzzle",
+    "game_type": 0,
+    "collections": [{"id": 72, "name": "Placeholder"}],
+    "genres": [{"id": 9, "name": "Puzzle"}],
+    "involved_companies": [
+      {"id": 803, "developer": true, "company": {"id": 303, "name": "Pretend Games"}}
+    ],
+    "screenshots": [{"id": 5003, "image_id": "scaaac", "width": 1600, "height": 900}]
+  }
+]
