@@ -16,6 +16,7 @@ from app.core.exceptions import PuzzleDataError
 from app.crud.session import create_session
 from app.crud.title import create_title
 from app.crud.user import deactivate_user, get_user_by_id
+from app.games import service
 from app.games.enums import ClueContentType, ClueRole, GuessResult, ProgressStatus
 from app.games.modules.base import (
     GuessEntry,
@@ -27,6 +28,7 @@ from app.games.modules.base import (
 )
 from app.games.modules.game_guesser import GameGuesserModule
 from app.main import app
+from app.models.game import Game
 from app.models.puzzle import Puzzle, PuzzleClue, PuzzleStatus
 from app.models.title import Title
 from tests.conftest import SetNow
@@ -644,6 +646,18 @@ def test__get_puzzle__clue_steps_that_are_not_one_to_six_raise(steps: tuple[int,
         GameGuesserModule().get_puzzle(
             _with_steps(steps), ProgressState(), is_signed_in=False, sign=fake_sign
         )
+
+
+def test__puzzle_data__a_puzzle_with_no_date_raises_puzzle_data_error() -> None:
+    # The database CHECK keeps a scheduled puzzle dated, so no query returns this row; the service
+    # still refuses it, with the app's 500, instead of a TypeError from the number sum.
+    game = Game(slug="game-guesser", launch_date=LAUNCH)
+    puzzle = Puzzle(id=42, variant="default", date=None, status=PuzzleStatus.DRAFT)
+
+    with pytest.raises(PuzzleDataError) as error:
+        service._puzzle_data(game, puzzle, clues=())
+
+    assert (error.value.status_code, str(error.value)) == (500, "puzzle 42 has no date")
 
 
 def _file(role: ClueRole, content_type: ClueContentType, name: str) -> MediaFileData:

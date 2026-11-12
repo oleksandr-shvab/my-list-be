@@ -282,6 +282,24 @@ async def test__puzzle__same_date_in_another_variant_or_game_is_accepted(
     )
 
 
+async def test__puzzle_build_slot__same_slot_in_another_variant_or_game_is_accepted(
+    db_session: AsyncSession, puzzle: Puzzle
+) -> None:
+    # A slot is unique per game and variant (R-7), not across the table.
+    other_game = await create_game(db_session, slug="other-game")
+    db_session.add_all(
+        [
+            new_puzzle(puzzle, build_slot=7),
+            new_puzzle(puzzle, build_slot=7, variant="hard"),
+            new_puzzle(puzzle, build_slot=7, game_id=other_game.id),
+        ]
+    )
+
+    await db_session.flush()
+
+    assert await count(db_session, Puzzle) == 4
+
+
 async def test__delete_game__refused_while_it_has_puzzles(
     db_session: AsyncSession, puzzle: Puzzle
 ) -> None:
