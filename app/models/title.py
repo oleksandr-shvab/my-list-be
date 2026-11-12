@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, enum_check
@@ -44,6 +44,8 @@ class Title(Base):
     # normalizer without `unaccent`.
     normalized_franchise: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The IGDB id of an imported title. NULLs are distinct, so titles made by hand stay valid.
+    igdb_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

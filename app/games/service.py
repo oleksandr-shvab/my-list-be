@@ -468,6 +468,9 @@ async def _find_puzzle(
 
 
 def _puzzle_data(game: Game, puzzle: Puzzle, *, clues: tuple[ClueData, ...]) -> PuzzleData:
+    # A visible puzzle is scheduled, and a scheduled puzzle has a date (`ck_puzzles_scheduled_has_date`).
+    if puzzle.date is None:
+        raise PuzzleDataError(f"puzzle {puzzle.id} has no date")
     return PuzzleData(
         slug=game.slug,
         variant=puzzle.variant,
