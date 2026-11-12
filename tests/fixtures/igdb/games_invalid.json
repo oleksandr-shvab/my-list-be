@@ -1,0 +1,17 @@
+[
+  {"id": 2001, "name": "Good Game", "slug": "good-game", "first_release_date": 984614400,
+   "screenshots": [
+     {"id": 6001, "image_id": "sdaaaa", "width": 1920, "height": 1080},
+     {"id": 6002, "width": 1920, "height": 1080},
+     {"id": 6003, "image_id": "sdaaab"},
+     {"id": 6004, "image_id": "../evil", "width": 1920, "height": 1080}
+   ]},
+  {"id": 2002, "name": ["not", "a", "string"], "slug": "wrong-shape"},
+  {"id": 2003, "slug": "no-name"},
+  {"id": "2004", "name": "Id Sent As Text", "slug": "id-as-text"},
+  {"id": 2005, "name": "!!! ???", "slug": "no-letters"},
+  {"id": 2006, "name": "Too Old", "slug": "too-old", "first_release_date": -631238400},
+  {"id": 2007, "name": "Far Future", "slug": "far-future", "first_release_date": 32472144000},
+  {"id": 2008, "name": "Absurd Date", "slug": "absurd-date", "first_release_date": 99999999999999999},
+  "not an object"
+]

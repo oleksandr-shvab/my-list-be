@@ -25,8 +25,15 @@ dev = [
   "ruff>=0.16.4",
 ]
 
+# Libraries the content scripts (app/content/, scripts/) need and the server does not. httpx is in
+# `dev` too, because the tests need it whatever the content scripts use. Both groups are default.
+content = [
+  "httpx>=0.28.1",
+]
+
 [tool.uv]
 package = false
+default-groups = ["dev", "content"]
 
 [tool.ruff]
 line-length = 100

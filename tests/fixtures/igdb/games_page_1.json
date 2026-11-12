@@ -1,0 +1,39 @@
+[
+  {
+    "id": 1001,
+    "name": "Example Quest",
+    "slug": "example-quest",
+    "first_release_date": 984614400,
+    "game_type": 0,
+    "franchise": {"id": 51, "name": "Example"},
+    "franchises": [{"id": 51, "name": "Example"}, {"id": 52, "name": "Example Spin-offs"}],
+    "collections": [{"id": 71, "name": "Example series"}],
+    "release_dates": [
+      {"id": 9001, "date": 984614400, "platform": {"id": 6, "name": "PC (Microsoft Windows)"}},
+      {"id": 9002, "date": 984614400, "platform": {"id": 48, "name": "PlayStation 4"}},
+      {"id": 9003, "date": 1054425600, "platform": {"id": 130, "name": "Nintendo Switch"}}
+    ],
+    "genres": [{"id": 12, "name": "Role-playing (RPG)"}, {"id": 31, "name": "Adventure"}],
+    "involved_companies": [
+      {"id": 801, "developer": true, "company": {"id": 301, "name": "Made Up Studio"}},
+      {"id": 802, "developer": false, "company": {"id": 302, "name": "Invented Publishing"}}
+    ],
+    "aggregated_rating": 84.5,
+    "aggregated_rating_count": 31,
+    "total_rating_count": 412,
+    "screenshots": [
+      {"id": 5001, "image_id": "scaaaa", "width": 1920, "height": 1080},
+      {"id": 5002, "image_id": "scaaab", "width": 1280, "height": 720}
+    ]
+  },
+  {
+    "id": 1002,
+    "name": "Sample Racer 2",
+    "slug": "sample-racer-2",
+    "first_release_date": 1054425600,
+    "game_type": 8,
+    "version_parent": 1000,
+    "release_dates": [{"id": 9004, "date": 1054425600}],
+    "total_rating_count": 3
+  }
+]
