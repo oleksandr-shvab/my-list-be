@@ -5,6 +5,8 @@ deployed-config checks there stay as they are. Only the scripts build this class
 never imports `app/content/`.
 """
 
+from typing import Literal
+
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,6 +27,23 @@ class ContentSettings(BaseSettings):
     IGDB_CLIENT_ID: str | None = None
     # A SecretStr prints as `**********` in a repr, a log line or a traceback.
     IGDB_CLIENT_SECRET: SecretStr | None = None
+
+    # The secret behind every random choice of the puzzle builder (AC-26 to AC-28). Kept outside
+    # the repos, different from every other secret, as strong as `SECRET_KEY`: see `check_salt`.
+    PUZZLE_SEED_SALT: SecretStr | None = None
+
+    # Who may be an answer (AC-21, AC-22): the start values, for the owner to tune after measuring
+    # them with `scripts/build_puzzles.py --counts` (AC-24).
+    CANDIDATE_MIN_RATINGS: int = 50
+    CANDIDATE_MIN_SCREENSHOTS: int = 7
+    CANDIDATE_MIN_WIDTH: int = 1280
+    CANDIDATE_MIN_HEIGHT: int = 720
+    CANDIDATE_MIN_AGE_DAYS: int = 365
+    # What "ratings" means (Open point 3): IGDB's `total_rating_count` (users and critics), or
+    # `aggregated_rating_count` (critics only).
+    CANDIDATE_RATING_FIELD: Literal["total_rating_count", "aggregated_rating_count"] = (
+        "total_rating_count"
+    )
 
     def require(self, *names: str) -> None:
         """Stop the run before any request when a setting is missing (AC-3)."""
