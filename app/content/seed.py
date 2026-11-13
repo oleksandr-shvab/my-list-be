@@ -16,11 +16,10 @@ the same inputs must then give other choices.
 import hashlib
 import hmac
 import json
-import os
 import random
 import sys
 from collections.abc import Iterable, Sequence
-from dataclasses import InitVar, dataclass, field
+from dataclasses import KW_ONLY, InitVar, dataclass, field
 from enum import StrEnum
 from typing import NoReturn
 
@@ -28,10 +27,11 @@ from pydantic import SecretStr
 
 from app.core.config import DEV_MEDIA_SIGNING_KEY, MIN_SECRET_KEY_LENGTH, Settings, is_weak_secret
 
-# The salt the tests use. It is public, so `check_salt` refuses it, and a `SlotSeed` takes it only
-# while pytest runs (`under_pytest`): a script cannot build a seed with it.
+# The salt the tests use. It is public, so `check_salt` refuses it unless pytest is imported
+# (`under_pytest`): a script never imports pytest, so it cannot use it.
 TEST_SALT = "pytest-fixed-salt-0123456789-abcdefghijklmnopqrstuvwxyz"
-# Values that are in the repo or its docs, so anybody can try them. `.env.example` ships the first.
+# Values that are in the repo or its docs, so anybody can try them: the tests' salt, the dev default
+# of `MEDIA_SIGNING_KEY`, and the placeholder `SECRET_KEY` of `.env.example`.
 PUBLIC_SALTS = frozenset(
     {
         TEST_SALT,
@@ -42,8 +42,9 @@ PUBLIC_SALTS = frozenset(
 # A text that says it is a placeholder is refused, whatever its length.
 PLACEHOLDER_MARKERS = ("change-me", "dev-only", "do-not-use")
 # A salt of at least 32 characters that uses fewer different characters is not random ("aaaa...",
-# "abababab..."). A random 32-character hex text has about 14, a base64 one about 26.
-MIN_DISTINCT_CHARACTERS = 10
+# "abababab..."). A random 32-character hex text has about 14 (fewer than 8 is a chance of about
+# one in 30 million), a base64 one about 26.
+MIN_DISTINCT_CHARACTERS = 8
 
 
 class SaltError(Exception):
@@ -60,14 +61,15 @@ class Purpose(StrEnum):
 
 
 def under_pytest() -> bool:
-    """True only while a test runs. A script does not run under pytest."""
-    return "pytest" in sys.modules and "PYTEST_CURRENT_TEST" in os.environ
+    """True when pytest is imported. `PYTEST_CURRENT_TEST` is not set while pytest imports test
+    modules, so it cannot be the test. A script never imports pytest."""
+    return "pytest" in sys.modules
 
 
 def check_salt(salt: SecretStr | None, other_secrets: Iterable[SecretStr | None] = ()) -> SecretStr:
-    """The salt, or `SaltError` when it is missing, weak (the rule of `SECRET_KEY`), public (the
-    test salt, a dev default, a placeholder), too regular, or equal to another secret of the
-    project (AC-27). The builder calls it before it reads IGDB.
+    """The salt, or `SaltError` when it is missing, weak (the rule of `SECRET_KEY`), public (a dev
+    default, a placeholder, and the test salt unless pytest is imported), too regular, or equal to
+    another secret of the project (AC-27). The builder calls it before it reads IGDB.
 
     No text of the salt is kept in a local variable here, so a traceback with locals never shows it.
     """
@@ -75,7 +77,8 @@ def check_salt(salt: SecretStr | None, other_secrets: Iterable[SecretStr | None]
         raise SaltError("PUZZLE_SEED_SALT is not set")
     if is_weak_secret(salt.get_secret_value()):
         raise SaltError("PUZZLE_SEED_SALT is a placeholder or too short")
-    if salt.get_secret_value() in PUBLIC_SALTS or any(
+    public = PUBLIC_SALTS - {TEST_SALT} if under_pytest() else PUBLIC_SALTS
+    if salt.get_secret_value() in public or any(
         marker in salt.get_secret_value().lower() for marker in PLACEHOLDER_MARKERS
     ):
         raise SaltError("PUZZLE_SEED_SALT is a value that is in the public repo or its docs")
@@ -114,22 +117,19 @@ def _hmac(key: bytes, message: str) -> bytes:
 
 @dataclass(frozen=True)
 class SlotSeed:
-    """The seed of one build slot. Making one checks the salt (`check_salt`, with
-    `other_secrets`), so a missing, weak or public salt cannot make a seed. The test salt is the
-    one exception, and only while pytest runs."""
+    """The seed of one build slot. Making one checks the salt (`check_salt`, with `other_secrets`),
+    so a missing, weak or public salt cannot make a seed. `other_secrets` is required, by keyword
+    (pass `reserved_secrets(...)`, or `()` in a test), and `dataclasses.replace` asks for it again."""
 
     salt: SecretStr = field(repr=False)
     slug: str
     variant: str
     slot: int
     version: str
-    other_secrets: InitVar[Iterable[SecretStr | None]] = ()
+    _: KW_ONLY
+    other_secrets: InitVar[Iterable[SecretStr | None]]
 
     def __post_init__(self, other_secrets: Iterable[SecretStr | None]) -> None:
-        if self.salt is not None and self.salt.get_secret_value() == TEST_SALT:
-            if not under_pytest():
-                raise SaltError("the test salt is for tests only")
-            return
         check_salt(self.salt, other_secrets)
 
     def __reduce__(self) -> NoReturn:

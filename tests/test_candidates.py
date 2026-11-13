@@ -15,7 +15,9 @@ from app.content.candidates import (
     CANDIDATE_TYPES,
     REBUILD_SCREENSHOTS,
     REQUIRED_SCREENSHOTS,
+    FunnelCounter,
     NotBuildableError,
+    NotBuildableReason,
     assign_screenshots,
     candidates_where,
     choose_answer,
@@ -28,7 +30,7 @@ from app.content.igdb import IgdbGame, parse_game
 from app.content.seed import TEST_SALT, Purpose, SlotSeed
 from app.content.settings import ContentSettings
 from app.content.titles_import import IN_SCOPE_TYPES, in_scope
-from app.crud.exclusion import list_exclusions
+from app.crud.exclusion import ExclusionRow, list_exclusions
 from app.crud.puzzle import list_answer_igdb_ids
 from app.crud.title import create_title
 from app.models.exclusion import AnswerExclusion
@@ -169,16 +171,16 @@ def test__funnel__thresholds_are_settings_and_candidates_are_in_the_search_list(
     assert ContentSettings(CANDIDATE_MIN_RATINGS=1, CANDIDATE_MIN_AGE_DAYS=0, _env_file=None)
 
 
-@pytest.mark.parametrize("screenshot_count", [7, 8, 12])
+@pytest.mark.parametrize("screenshot_count", [7, 8, 14, 15, 20])
 def test__assign_screenshots__crop_and_clip_never_reuse_a_step_screenshot(
     screenshot_count: int,
 ) -> None:
     game = make_game(screenshots=shots(screenshot_count))
     clip_sizes = set()
     for slot in range(1, 41):
-        stream = SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", slot, "1").stream(
-            Purpose.SCREENSHOTS
-        )
+        stream = SlotSeed(
+            SecretStr(TEST_SALT), "game-guesser", "default", slot, "1", other_secrets=()
+        ).stream(Purpose.SCREENSHOTS)
         plan = assign_screenshots(game, stream, set(), settings=SETTINGS)
         step_ids = [shot.image_id for shot in plan.steps]
         clip_ids = [shot.image_id for shot in plan.clip]
@@ -187,12 +189,15 @@ def test__assign_screenshots__crop_and_clip_never_reuse_a_step_screenshot(
         assert not set(clip_ids) & {plan.crop.image_id, *step_ids}  # AC-37
         assert len(set(step_ids + clip_ids + [plan.crop.image_id])) == len(step_ids + clip_ids) + 1
         clip_sizes.add(len(clip_ids))
-    assert clip_sizes == ({2} if screenshot_count == 7 else {2, 3})
+    # Three clip shots only when 7 more are left for a rebuild: a game with 14 keeps clip 2.
+    assert clip_sizes == ({2} if screenshot_count <= 14 else {2, 3})
 
 
 def test__assign_screenshots__skips_avoided_ones_and_ignores_input_order() -> None:
     game = make_game(screenshots=shots(10))
-    stream = SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", 1, "1").stream
+    stream = SlotSeed(
+        SecretStr(TEST_SALT), "game-guesser", "default", 1, "1", other_secrets=()
+    ).stream
     avoid = {"shot00", "shot01", "shot02"}
     plan = assign_screenshots(game, stream(Purpose.SCREENSHOTS), avoid, settings=SETTINGS)
     used = {shot.image_id for shot in (*plan.steps, plan.crop, *plan.clip)}
@@ -213,63 +218,87 @@ def test__assign_screenshots__skips_avoided_ones_and_ignores_input_order() -> No
 def test__assign_screenshots__golden_plans_do_not_change_with_the_python_version() -> None:
     """The draws use only `random()`, so these ids hold on any Python. If this goes red, the choice
     logic changed: raise the builder's GENERATOR_VERSION."""
-    game = make_game(screenshots=shots(10))
-    plans = [
-        assign_screenshots(
-            game,
-            SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", slot, "1").stream(
-                Purpose.SCREENSHOTS
-            ),
-            set(),
-            settings=SETTINGS,
-        ).image_ids
-        for slot in (1, 2, 3)
-    ]
-    assert plans == [
-        ["shot07", "shot08", "shot03", "shot04", "shot05", "shot06", "shot09", "shot02"],
+
+    def plan(count: int, slot: int) -> list[str]:
+        stream = SlotSeed(
+            SecretStr(TEST_SALT), "game-guesser", "default", slot, "1", other_secrets=()
+        ).stream(Purpose.SCREENSHOTS)
+        game = make_game(screenshots=shots(count))
+        return assign_screenshots(game, stream, set(), settings=SETTINGS).image_ids
+
+    assert [plan(10, slot) for slot in (1, 2, 3)] == [
+        ["shot07", "shot08", "shot03", "shot04", "shot05", "shot06", "shot09"],
         ["shot08", "shot00", "shot03", "shot01", "shot04", "shot05", "shot06"],
         ["shot09", "shot00", "shot01", "shot07", "shot08", "shot06", "shot04"],
     ]
+    # 20 screenshots: slot 1 draws a clip of three (the cap allows it from 15), slot 2 of two.
+    assert [plan(20, slot) for slot in (1, 2)] == [
+        ["shot15", "shot17", "shot07", "shot08", "shot09", "shot14", "shot13", "shot16"],
+        ["shot17", "shot00", "shot06", "shot02", "shot04", "shot07", "shot10"],
+    ]
 
 
-def test__assign_screenshots__a_rebuild_leaves_out_the_five_stills_and_may_reuse_the_clip() -> None:
-    game = make_game(screenshots=shots(12))
-    first = assign_screenshots(
-        game,
-        SlotSeed(SecretStr(TEST_SALT), "g", "default", 1, "1").stream(Purpose.SCREENSHOTS),
-        (),
-        settings=SETTINGS,
-    )
-    assert first.image_ids[0] == first.crop.image_id  # step order: crop, steps 2 to 5, clip
-    assert first.image_ids[1:5] == [shot.image_id for shot in first.steps]
-    avoid = rebuild_avoid_ids(first.image_ids)
-    assert len(avoid) == 5 and set(avoid) == {s.image_id for s in (first.crop, *first.steps)}
-    second = assign_screenshots(
-        game,
-        SlotSeed(SecretStr(TEST_SALT), "g", "default", 1, "2").stream(Purpose.SCREENSHOTS),
-        avoid,
-        settings=SETTINGS,
-    )
-    assert not set(second.image_ids) & set(avoid)
-    # 12 screenshots less the 5 stills leave exactly 7: the old clip's screenshots are used again.
-    assert set(first.image_ids[5:]) <= set(second.image_ids)
-    assert REBUILD_SCREENSHOTS == 12
-    # With 11 there is no way to change every still: the owner is told to reject as "never".
-    few = make_game(screenshots=shots(11))
-    with pytest.raises(NotBuildableError, match='reject the draft as "never"'):
-        assign_screenshots(few, second_stream(), avoid, settings=SETTINGS)
-    counter = funnel(
-        [make_game(1, screenshots=shots(11)), make_game(2, screenshots=shots(12))],
-        today=TODAY,
-        settings=SETTINGS,
-        earlier_answer_igdb_ids=(),
-        never_igdb_ids=(),
-    )
-    assert len(counter.candidates) == 2 and counter.survive_one_rebuild == 1
+def rebuild_row(slot: int, image_ids: list[str], reason: str = "rebuild") -> ExclusionRow:
+    return ExclusionRow(1, 100, reason, "default", slot, image_ids)
 
 
-def second_stream() -> Any:
-    return SlotSeed(SecretStr(TEST_SALT), "g", "default", 2, "1").stream(Purpose.SCREENSHOTS)
+def test__rebuild__leaves_out_every_screenshot_of_every_rejected_draft() -> None:
+    game = make_game(screenshots=shots(14))  # 7 for the draft and 7 for one rebuild
+    first = assign_screenshots(game, stream_of(1, "1"), set(), settings=SETTINGS)
+    assert len(first.image_ids) == 7  # a game with 14 keeps 7 back for a rebuild
+    rows = [
+        rebuild_row(1, first.image_ids),
+        rebuild_row(2, ["shot13"]),  # another slot's rows do not count
+        rebuild_row(1, ["shot99"], "never"),  # a never row names an image that is in no pool
+    ]
+    avoid = rebuild_avoid_ids(rows, variant="default", slot=1)
+    assert avoid == set(first.image_ids)
+    assert rebuild_avoid_ids(rows, variant="other", slot=1) == set()
+    second = assign_screenshots(game, stream_of(1, "2"), avoid, settings=SETTINGS)
+    assert not set(second.image_ids) & avoid
+    # A second rejected draft of the slot: the union of both is left out, and 14 are gone.
+    rows.append(rebuild_row(1, second.image_ids))
+    union = rebuild_avoid_ids(rows, variant="default", slot=1)
+    assert union == set(first.image_ids) | set(second.image_ids)
+    with pytest.raises(NotBuildableError, match="give up the rebuild") as refusal:
+        assign_screenshots(game, stream_of(1, "3"), union, settings=SETTINGS)
+    assert refusal.value.reason == NotBuildableReason.CANNOT_REBUILD
+    assert "reject the draft" not in str(refusal.value)  # the draft is already deleted
+    # A row with no image ids: the reject step failed to record them; do not repeat the draft.
+    with pytest.raises(NotBuildableError, match="no image ids") as bad:
+        rebuild_avoid_ids([*rows, rebuild_row(1, [])], variant="default", slot=1)
+    assert bad.value.reason == NotBuildableReason.BAD_REBUILD_ROW
+    # Without a rebuild row there is nothing to avoid, and too few screenshots is another reason.
+    assert rebuild_avoid_ids([rebuild_row(2, ["x"])], variant="default", slot=1) == set()
+    with pytest.raises(NotBuildableError) as few:
+        assign_screenshots(
+            make_game(screenshots=shots(6)), stream_of(1, "1"), set(), settings=SETTINGS
+        )
+    assert few.value.reason == NotBuildableReason.TOO_FEW_SCREENSHOTS
+    assert REBUILD_SCREENSHOTS == 14
+
+
+def test__funnel_counter__counts_one_rebuild_at_14_screenshots_and_can_keep_no_games() -> None:
+    games = [make_game(1, screenshots=shots(13)), make_game(2, screenshots=shots(14))]
+    args: dict[str, Any] = {
+        "today": TODAY,
+        "settings": SETTINGS,
+        "earlier_answer_igdb_ids": (),
+        "never_igdb_ids": (),
+    }
+    kept = funnel(games, **args)
+    assert len(kept.candidates) == 2 and kept.survive_one_rebuild == 1
+    counter = FunnelCounter(**args, keep_candidates=False)
+    for game in games:
+        counter.add(game)
+    result = counter.result()
+    assert result.candidates == () and result.survive_one_rebuild == 1
+    assert result.steps == kept.steps
+
+
+def stream_of(slot: int, version: str) -> Any:
+    seed = SlotSeed(SecretStr(TEST_SALT), "g", "default", slot, version, other_secrets=())
+    return seed.stream(Purpose.SCREENSHOTS)
 
 
 async def test__earlier_answers_and_exclusions__come_from_every_status(
@@ -321,3 +350,6 @@ async def test__earlier_answers_and_exclusions__come_from_every_status(
     assert rebuild_reserved_igdb_ids(rows) == {200}
     assert rebuild_reserved_igdb_ids(rows, own_slot=("default", 8)) == {200}
     assert rebuild_reserved_igdb_ids(rows, own_slot=("default", 7)) == set()
+    # This test's rebuild row holds no image ids, as if the reject step had not recorded them.
+    with pytest.raises(NotBuildableError, match="no image ids"):
+        rebuild_avoid_ids(rows, variant="default", slot=7)

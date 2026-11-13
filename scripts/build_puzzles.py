@@ -95,6 +95,7 @@ async def run_counts(settings: ContentSettings, slug: str) -> CountsReport:
             earlier_answer_igdb_ids=earlier,
             never_igdb_ids=never_igdb_ids(exclusions),
             reserved_igdb_ids=rebuild_reserved_igdb_ids(exclusions),
+            keep_candidates=False,
         )
         async with IgdbClient.from_settings(settings) as igdb:
             # One game at a time: only the games that pass are kept.

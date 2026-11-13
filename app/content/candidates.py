@@ -8,6 +8,7 @@ import datetime as dt
 import random
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import NamedTuple
 
 from app.content.hints import is_valid_slug
@@ -38,15 +39,26 @@ MIN_CLIP_SCREENSHOTS = 2  # step 6
 MAX_CLIP_SCREENSHOTS = 3
 # The fewest screenshots a build needs (AC-34, AC-37), whatever the setting says.
 REQUIRED_SCREENSHOTS = STEP_SCREENSHOTS + CROP_SCREENSHOTS + MIN_CLIP_SCREENSHOTS
-# The reviewer sees steps 1 to 5 as stills. A rebuild must not show any of them again (AC-52); the
-# clip is a few seconds of pan and fade, so it may reuse any screenshot.
-STILL_SCREENSHOTS = STEP_SCREENSHOTS + CROP_SCREENSHOTS
-# So a game that survives one rebuild has this many usable screenshots: 5 to leave out, 7 to build.
-REBUILD_SCREENSHOTS = STILL_SCREENSHOTS + REQUIRED_SCREENSHOTS
+# A rebuild leaves out every screenshot of every rejected draft of its slot (owner decision 71), so
+# a game that survives one rebuild has 7 usable screenshots for the draft and 7 more for the rebuild.
+REBUILD_SCREENSHOTS = 2 * REQUIRED_SCREENSHOTS
+
+
+class NotBuildableReason(StrEnum):
+    """Why a slot cannot be built; stable, so the builder can act on it."""
+
+    NO_CANDIDATE = "no_candidate"
+    TOO_FEW_SCREENSHOTS = "too_few_screenshots"
+    CANNOT_REBUILD = "cannot_rebuild"
+    BAD_REBUILD_ROW = "bad_rebuild_row"
 
 
 class NotBuildableError(Exception):
-    """No answer or no screenshot set is left. The message holds no game name."""
+    """No answer or no screenshot set is left for a slot. The message holds no game name."""
+
+    def __init__(self, reason: NotBuildableReason, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class FunnelStep(NamedTuple):
@@ -105,7 +117,8 @@ def rebuild_reserved_igdb_ids(
 
 class FunnelCounter:
     """The filters of AC-21 in order (AC-24). Games are added one at a time, so a long run holds only
-    the games that pass, not every game IGDB sent."""
+    the games that pass, not every game IGDB sent; with `keep_candidates=False` (the counts-only
+    mode of `--counts`) it holds none."""
 
     def __init__(
         self,
@@ -115,8 +128,13 @@ class FunnelCounter:
         earlier_answer_igdb_ids: Collection[int],
         never_igdb_ids: Collection[int],
         reserved_igdb_ids: Collection[int] = (),
+        keep_candidates: bool = True,
     ) -> None:
         self._settings = settings
+        self._keep_candidates = keep_candidates
+        # The eligible screenshots of the game being added, made once for the filter and the
+        # rebuild count.
+        self._last: tuple[IgdbGame, list[IgdbScreenshot]] | None = None
         latest_release = today - dt.timedelta(days=settings.CANDIDATE_MIN_AGE_DAYS)
         min_screenshots = max(settings.CANDIDATE_MIN_SCREENSHOTS, REQUIRED_SCREENSHOTS)
 
@@ -144,7 +162,7 @@ class FunnelCounter:
                     f"at least {min_screenshots} screenshots of "
                     f"{settings.CANDIDATE_MIN_WIDTH}x{settings.CANDIDATE_MIN_HEIGHT} or more"
                 ),
-                lambda game: len(eligible_screenshots(game, settings)) >= min_screenshots,
+                lambda game: len(self._eligible(game)) >= min_screenshots,
             ),
             ("a valid IGDB slug", lambda game: is_valid_slug(game.slug)),
             ("not rejected as never", lambda game: game.id not in never_igdb_ids),
@@ -162,9 +180,15 @@ class FunnelCounter:
             if not keep(game):
                 return
             self._counts[number] += 1
-        self._candidates.append(game)
-        if len(eligible_screenshots(game, self._settings)) >= REBUILD_SCREENSHOTS:
+        if self._keep_candidates:
+            self._candidates.append(game)
+        if len(self._eligible(game)) >= REBUILD_SCREENSHOTS:
             self._survive_one_rebuild += 1
+
+    def _eligible(self, game: IgdbGame) -> list[IgdbScreenshot]:
+        if self._last is None or self._last[0] is not game:
+            self._last = (game, eligible_screenshots(game, self._settings))
+        return self._last[1]
 
     def result(self) -> Funnel:
         names = ["games read"] + [name for name, _ in self._rules]
@@ -198,7 +222,7 @@ def funnel(
 def choose_answer(candidates: Sequence[IgdbGame], stream: random.Random) -> IgdbGame:
     """One candidate, drawn from the list sorted by IGDB id (AC-26, AC-28)."""
     if not candidates:
-        raise NotBuildableError("no candidate is left")
+        raise NotBuildableError(NotBuildableReason.NO_CANDIDATE, "no candidate is left")
     ordered = sorted(candidates, key=lambda game: game.id)
     return ordered[draw_index(stream, len(ordered))]
 
@@ -214,17 +238,32 @@ class ScreenshotPlan:
 
     @property
     def image_ids(self) -> list[str]:
-        """Every image id the draft used, in step order: the crop (step 1), steps 2 to 5, then the
-        clip. A rejected draft's `answer_exclusions.image_ids` holds this list, and a rebuild reads
-        the stills back with `rebuild_avoid_ids`."""
+        """Every image id the draft used (the crop, steps 2 to 5, then the clip). A rejected draft's
+        `answer_exclusions.image_ids` holds all of them, and every later build of the slot leaves
+        them out (`rebuild_avoid_ids`)."""
         return [shot.image_id for shot in (self.crop, *self.steps, *self.clip)]
 
 
-def rebuild_avoid_ids(image_ids: Sequence[str]) -> list[str]:
-    """The screenshots a rebuild must not use: the ones the reviewer saw as stills (steps 1 to 5),
-    the first `STILL_SCREENSHOTS` of the list `ScreenshotPlan.image_ids` made. The clip's may be
-    used again (AC-52)."""
-    return list(image_ids[:STILL_SCREENSHOTS])
+def rebuild_avoid_ids(exclusions: Iterable[ExclusionRow], *, variant: str, slot: int) -> set[str]:
+    """The screenshots a build of this slot must not use: the union of `image_ids` of every
+    `rebuild` row of the slot, so no rebuild shows a screenshot of any rejected draft (AC-52,
+    decision 71). Empty when the slot has no such row. A `rebuild` row with no image ids means the
+    reject step did not record them; rebuilding would repeat the rejected draft, so it is an error.
+    """
+    avoid: set[str] = set()
+    for row in exclusions:
+        if row.reason != ExclusionReason.REBUILD or (row.variant, row.build_slot) != (
+            variant,
+            slot,
+        ):
+            continue
+        if not row.image_ids:
+            raise NotBuildableError(
+                NotBuildableReason.BAD_REBUILD_ROW,
+                f"the rebuild row of slot {slot} has no image ids; the reject step did not record them",
+            )
+        avoid.update(row.image_ids)
+    return avoid
 
 
 def assign_screenshots(
@@ -235,20 +274,27 @@ def assign_screenshots(
     settings: ContentSettings,
 ) -> ScreenshotPlan:
     """Pick the screenshots of one build from the eligible ones, minus `avoid_ids` (for a rebuild,
-    `rebuild_avoid_ids` of the rejected draft, R-9). Fewer than `REQUIRED_SCREENSHOTS` left is
-    `NotBuildableError`; for a rebuild the message says to reject the draft as "never"."""
+    `rebuild_avoid_ids`, R-9). Fewer than `REQUIRED_SCREENSHOTS` left is `NotBuildableError`: reason
+    `cannot_rebuild` for a rebuild, `too_few_screenshots` otherwise."""
     pool = [shot for shot in eligible_screenshots(game, settings) if shot.image_id not in avoid_ids]
     if len(pool) < REQUIRED_SCREENSHOTS:
-        reason = f"{len(pool)} usable screenshots, {REQUIRED_SCREENSHOTS} are needed"
         if avoid_ids:
-            reason += (
-                f" after leaving out the {len(avoid_ids)} of the rejected draft: this game has too"
-                f" few screenshots for a rebuild ({REBUILD_SCREENSHOTS} are needed); reject the"
-                ' draft as "never"'
+            raise NotBuildableError(
+                NotBuildableReason.CANNOT_REBUILD,
+                f"this slot cannot be rebuilt: {len(pool)} usable screenshots are left after"
+                f" leaving out the {len(avoid_ids)} of the rejected drafts and"
+                f" {REQUIRED_SCREENSHOTS} are needed; give up the rebuild with build_puzzles.py"
+                " (M1-22d)",
             )
-        raise NotBuildableError(reason)
-    spare = len(pool) - STEP_SCREENSHOTS - CROP_SCREENSHOTS
-    clip_count = min(MIN_CLIP_SCREENSHOTS + draw_index(stream, 2), spare)
+        raise NotBuildableError(
+            NotBuildableReason.TOO_FEW_SCREENSHOTS,
+            f"{len(pool)} usable screenshots, {REQUIRED_SCREENSHOTS} are needed",
+        )
+    # A rebuild needs 7 screenshots the draft did not use, so the clip takes a third one only when
+    # that many are still left (a game with 14 usable screenshots survives one rebuild, `--counts`).
+    spare_for_clip = len(pool) - STEP_SCREENSHOTS - CROP_SCREENSHOTS - REQUIRED_SCREENSHOTS
+    max_clip = max(MIN_CLIP_SCREENSHOTS, min(MAX_CLIP_SCREENSHOTS, spare_for_clip))
+    clip_count = min(MIN_CLIP_SCREENSHOTS + draw_index(stream, 2), max_clip)
     # One draw without replacement, so no screenshot can be in two places.
     picks = draw_distinct(stream, pool, STEP_SCREENSHOTS + CROP_SCREENSHOTS + clip_count)
     return ScreenshotPlan(

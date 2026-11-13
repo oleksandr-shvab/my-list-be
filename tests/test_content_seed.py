@@ -4,8 +4,10 @@ No database and no network. The tests use the public `TEST_SALT`, which a `SlotS
 under pytest."""
 
 import dataclasses
+import hashlib
 import pickle
 import random
+import sys
 from collections import Counter
 from types import SimpleNamespace
 from typing import Any
@@ -53,7 +55,7 @@ def games(count: int) -> list[IgdbGame]:
 
 
 def seed_of(salt: str, slot: int = 1, *, version: str = "1") -> SlotSeed:
-    return SlotSeed(SecretStr(salt), "game-guesser", "default", slot, version)
+    return SlotSeed(SecretStr(salt), "game-guesser", "default", slot, version, other_secrets=())
 
 
 def answers(salt: str, candidates: list[IgdbGame], *, version: str = "1") -> list[int]:
@@ -71,13 +73,12 @@ REFUSED = [
     ("short", "too short"),
     ("Zq8Xk2Lm9Pw4Rt6Yv1Nb", "too short"),  # 20 characters: weak, and not in the message
     ("change-me", "too short"),
-    (TEST_SALT, "public repo"),  # the tests' own salt
     (DEV_MEDIA_SIGNING_KEY, "public repo"),  # a dev default
     ("change-me-to-a-random-string-of-at-least-32-characters", "public repo"),  # .env.example
     ("my-own-dev-only-salt-" + "Zx9" * 6, "public repo"),  # says it is a placeholder
     ("a" * 40, "too regular"),
     ("ab12" * 10, "too regular"),
-    ("abcdefghi" * 5, "too regular"),  # nine different characters
+    ("abcdefg" * 6, "too regular"),  # seven different characters
     (SALT, "must differ"),  # equal to another secret, below
 ]
 
@@ -109,21 +110,43 @@ def test__reserved_secrets__every_secret_of_the_project_is_refused(name: str) ->
     assert check_salt(SecretStr(SALT), others).get_secret_value() == SALT
 
 
-def test__slot_seed__a_bad_salt_cannot_make_a_seed_and_the_salt_stays_secret(
+def test__check_salt__the_test_salt_needs_pytest_and_a_random_hex_salt_is_accepted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for salt, _ in REFUSED[:-1]:
-        if salt != TEST_SALT:  # the test salt is allowed under pytest, checked below
-            with pytest.raises(SaltError):
-                SlotSeed(secret(salt), "game-guesser", "default", 1, "1")  # type: ignore[arg-type]
-    with pytest.raises(SaltError, match="must differ"):
-        SlotSeed(SecretStr(SALT), "game-guesser", "default", 1, "1", [SecretStr(SALT)])
-    assert SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", 1, "1").seed  # under pytest
-    # A script does not run under pytest, so it cannot take the test-salt path.
+    assert check_salt(SecretStr(TEST_SALT)).get_secret_value() == TEST_SALT  # pytest is imported
+    # A script never imports pytest, so there the test salt is a public value.
+    monkeypatch.delitem(sys.modules, "pytest")
+    with pytest.raises(SaltError, match="public repo"):
+        check_salt(SecretStr(TEST_SALT))
+    monkeypatch.undo()
+    # pytest sets PYTEST_CURRENT_TEST only while a test runs, not while it imports test modules.
     monkeypatch.delenv("PYTEST_CURRENT_TEST")
-    with pytest.raises(SaltError, match="tests only"):
-        SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", 1, "1")
+    assert check_salt(SecretStr(TEST_SALT)).get_secret_value() == TEST_SALT
+    monkeypatch.undo()
+    # 8 different characters are enough, and a random hex salt never has fewer (a fixed list here).
+    assert check_salt(SecretStr("abcdefgh" * 5))
+    for number in range(500):
+        check_salt(SecretStr(hashlib.sha256(str(number).encode()).hexdigest()[:32]))
+
+
+def test__slot_seed__a_bad_salt_cannot_make_a_seed_and_the_salt_stays_secret() -> None:
+    for salt, _ in REFUSED[:-1]:
+        with pytest.raises(SaltError):
+            SlotSeed(secret(salt), "game-guesser", "default", 1, "1", other_secrets=())  # type: ignore[arg-type]
+    # A salt equal to another secret (SECRET_KEY, say) cannot make a seed, and the list is required.
+    with pytest.raises(SaltError, match="must differ"):
+        SlotSeed(
+            SecretStr(SALT), "game-guesser", "default", 1, "1", other_secrets=[SecretStr(SALT)]
+        )
+    with pytest.raises(TypeError, match="other_secrets"):
+        SlotSeed(SecretStr(SALT), "game-guesser", "default", 1, "1")  # type: ignore[call-arg]
     seed = seed_of(SALT)
+    # `replace` runs the check again, so it needs the list again and a clash is refused.
+    with pytest.raises(ValueError, match="other_secrets"):
+        dataclasses.replace(seed, slot=2)  # type: ignore[arg-type]
+    with pytest.raises(SaltError, match="must differ"):
+        dataclasses.replace(seed, slot=2, other_secrets=[SecretStr(SALT)])
+    assert dataclasses.replace(seed, slot=2, other_secrets=()).slot == 2
     shown = repr(seed) + str(seed) + repr(dataclasses.asdict(seed))
     shown += repr(ContentSettings(PUZZLE_SEED_SALT=SecretStr(SALT), _env_file=None))
     assert SALT not in shown
@@ -144,7 +167,10 @@ def test__slot_seed__one_salt_repeats_and_another_salt_chooses_otherwise() -> No
     assert seed_of(OTHER_SALT, 7).stream(Purpose.CROP).random() != numbers[Purpose.CROP][0]
     # A colon in a field cannot move a field into its neighbour.
     ambiguous = [("a:b", "c"), ("a", "b:c"), ("a", "b"), ("a:b", "")]
-    seeds = {SlotSeed(SecretStr(SALT), slug, variant, 1, "1").seed for slug, variant in ambiguous}
+    seeds = {
+        SlotSeed(SecretStr(SALT), slug, variant, 1, "1", other_secrets=()).seed
+        for slug, variant in ambiguous
+    }
     assert len(seeds) == len(ambiguous)
     assert isinstance(seed.stream(Purpose.CLIP), random.Random)
 
