@@ -806,13 +806,13 @@ async def test__seed_dev__can_run_twice_and_gives_a_playable_game(
     assert (
         await client.get(f"/v1/games/game-guesser/puzzles/{before_launch.isoformat()}")
     ).status_code == 404
-    # Six puzzles with six clues each; exactly one has no Metacritic hint at step 2.
+    # Six puzzles with six clues each; exactly one has no critic score hint at step 2.
     clue_hints = (
         (await db_session.execute(select(PuzzleClue.hint_kind).where(PuzzleClue.step == 2)))
         .scalars()
         .all()
     )
-    assert sorted(kind or "" for kind in clue_hints) == [""] + ["metacritic_score"] * 5
+    assert sorted(kind or "" for kind in clue_hints) == [""] + ["critic_score"] * 5
 
 
 async def test__seed_dev__updates_existing_titles_and_survives_duplicates(
