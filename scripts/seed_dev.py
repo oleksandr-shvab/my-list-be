@@ -18,12 +18,10 @@ import asyncio
 import datetime as dt
 import hashlib
 import json
-import os
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -31,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.content.target import refusal_reason
 from app.core.clock import get_now, utc_today
 from app.core.config import settings
 from app.crud.title import create_title, find_title_by_name, update_title
@@ -40,7 +39,6 @@ from app.models.puzzle import ClueMediaFile, Puzzle, PuzzleClue, PuzzleStatus
 from app.models.title import Title, TitleKind
 
 GAME_SLUG = "game-guesser"
-LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 DEFAULT_VARIANT = "default"
 LAUNCH_DAYS_AGO = 3
 # The source credit shown when the game ends. A placeholder: no real source is committed.
@@ -231,21 +229,6 @@ async def _run() -> None:
         await db.commit()
     await engine.dispose()
     print(f"Seeded {GAME_SLUG}: {len(TITLES)} titles and {len(PUZZLES)} puzzles around {today}.")
-
-
-def refusal_reason() -> str | None:
-    """Why the seed must not run here, or None. It deletes data, so it checks the ENVIRONMENT
-    variable itself: `settings.ENVIRONMENT` defaults to `local` when the variable is missing, which
-    would make this check pass by accident."""
-    environment = os.environ.get("ENVIRONMENT")
-    if environment != "local":
-        return f"the ENVIRONMENT variable is {environment!r}, not 'local'"
-    if settings.MEDIA_STORAGE != "local":
-        return f"MEDIA_STORAGE is {settings.MEDIA_STORAGE!r}, and the seed writes to a local folder"
-    host = urlsplit(settings.DATABASE_URL).hostname
-    if host not in LOCAL_HOSTS:
-        return f"DATABASE_URL points at host {host!r}, not this machine"
-    return None
 
 
 def main() -> int:

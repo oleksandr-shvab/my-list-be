@@ -1,10 +1,12 @@
 from collections.abc import Collection, Sequence
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import and_, desc, exists, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_local
 from app.games.normalize import normalize_text
+from app.models.progress import Progress, ProgressGuess
+from app.models.puzzle import Puzzle
 from app.models.title import Title, TitleKind
 
 
@@ -30,23 +32,46 @@ async def create_title(
     franchise: str | None = None,
     year: int | None = None,
     kind: TitleKind = TitleKind.VIDEO_GAME,
+    igdb_id: int | None = None,
+    flush: bool = True,
 ) -> Title:
     """With `update_title`, the only place that writes `normalized_name` and
-    `normalized_franchise`."""
-    title = Title(kind=kind, year=year, **_title_fields(name, franchise))
+    `normalized_franchise`. A bulk caller passes `flush=False` and lets its commit flush."""
+    title = Title(kind=kind, year=year, igdb_id=igdb_id, **_title_fields(name, franchise))
     db.add(title)
-    await db.flush()
+    if flush:
+        await db.flush()
     return title
 
 
 async def update_title(
-    db: AsyncSession, title: Title, *, name: str, franchise: str | None, year: int | None
+    db: AsyncSession,
+    title: Title,
+    *,
+    name: str,
+    franchise: str | None,
+    year: int | None,
+    igdb_id: int | None = None,
+    flush: bool = True,
 ) -> Title:
+    """`igdb_id` is only set when given: a caller that does not know it never clears it."""
     for field, value in _title_fields(name, franchise).items():
         setattr(title, field, value)
     title.year = year
-    await db.flush()
+    if igdb_id is not None:
+        title.igdb_id = igdb_id
+    if flush:
+        await db.flush()
     return title
+
+
+def title_changes(
+    title: Title, *, name: str, franchise: str | None, year: int | None
+) -> frozenset[str]:
+    """The columns `update_title` would change, by column name. The import uses it to leave a
+    title alone when nothing changes, and to see whether a normalized column would move."""
+    wanted = {**_title_fields(name, franchise), "year": year}
+    return frozenset(field for field, value in wanted.items() if getattr(title, field) != value)
 
 
 async def find_title_by_name(db: AsyncSession, *, name: str, kind: TitleKind) -> Title | None:
@@ -55,6 +80,50 @@ async def find_title_by_name(db: AsyncSession, *, name: str, kind: TitleKind) ->
         select(Title).where(Title.kind == kind, Title.name == name).order_by(Title.id).limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def get_titles_by_igdb_ids(db: AsyncSession, ids: Collection[int]) -> dict[int, Title]:
+    """The stored titles that came from these IGDB ids, by IGDB id."""
+    if not ids:
+        return {}
+    result = await db.execute(select(Title).where(Title.igdb_id.in_(ids)))
+    return {title.igdb_id: title for title in result.scalars() if title.igdb_id is not None}
+
+
+async def find_key_holders(
+    db: AsyncSession, *, kind: TitleKind, keys: Collection[tuple[str, int | None]]
+) -> list[tuple[int | None, str, int | None]]:
+    """Stored titles whose (normalized name, year) is one of `keys`, as (IGDB id, normalized name,
+    year). No year matches no year (AC-14). One query for all the keys."""
+    dated = [(name, year) for name, year in keys if year is not None]
+    undated = [name for name, year in keys if year is None]
+    matches = []
+    if dated:
+        matches.append(tuple_(Title.normalized_name, Title.year).in_(dated))
+    if undated:
+        matches.append(and_(Title.normalized_name.in_(undated), Title.year.is_(None)))
+    if not matches:
+        return []
+    result = await db.execute(
+        select(Title.igdb_id, Title.normalized_name, Title.year).where(
+            Title.kind == kind, or_(*matches)
+        )
+    )
+    return [(igdb_id, name, year) for igdb_id, name, year in result]
+
+
+async def referenced_title_ids(db: AsyncSession, ids: Collection[int]) -> set[int]:
+    """Which of these titles a stored game depends on: guessed in a stored game, or the answer of
+    a puzzle somebody has a stored game on (R-15, AC-18)."""
+    if not ids:
+        return set()
+    guessed = select(ProgressGuess.title_id).where(ProgressGuess.title_id.in_(ids))
+    answered = select(Puzzle.answer_title_id).where(
+        Puzzle.answer_title_id.in_(ids),
+        exists().where(Progress.puzzle_id == Puzzle.id),
+    )
+    result = await db.execute(guessed.union(answered))
+    return {title_id for title_id in result.scalars() if title_id is not None}
 
 
 # Title keys are 32-bit integers; asyncpg refuses a larger bound value, which would be a 500.

@@ -854,6 +854,7 @@ def test__seed_dev__refuses_when_the_environment_variable_is_not_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seed_dev = _load_seed_script()
+    monkeypatch.delenv("CI", raising=False)  # CI runs set it, and the guard refuses then
     monkeypatch.setattr(settings, "DATABASE_URL", "postgresql+asyncpg://u:p@localhost:5544/db")
 
     for value in (None, "test", "production", ""):
@@ -869,6 +870,7 @@ def test__seed_dev__refuses_a_database_on_another_host(
     monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
     seed_dev = _load_seed_script()
+    monkeypatch.delenv("CI", raising=False)  # CI runs set it, and the guard refuses then
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setattr(settings, "DATABASE_URL", f"postgresql+asyncpg://u:p@{host}:5432/db")
 
@@ -880,6 +882,7 @@ def test__seed_dev__refuses_to_write_media_when_the_storage_is_not_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seed_dev = _load_seed_script()
+    monkeypatch.delenv("CI", raising=False)  # CI runs set it, and the guard refuses then
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setattr(settings, "DATABASE_URL", "postgresql+asyncpg://u:p@localhost:5544/db")
     monkeypatch.setattr(settings, "MEDIA_STORAGE", "s3")
@@ -887,6 +890,8 @@ def test__seed_dev__refuses_to_write_media_when_the_storage_is_not_local(
     assert seed_dev.main() == 1
     reason = seed_dev.refusal_reason()
     assert reason is not None and "MEDIA_STORAGE" in reason
+    # A script that writes no media (the benchmark) is not stopped by the storage.
+    assert seed_dev.refusal_reason(needs_local_storage=False) is None
 
 
 @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
@@ -894,7 +899,12 @@ def test__seed_dev__accepts_a_local_environment_and_host(
     monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
     seed_dev = _load_seed_script()
+    monkeypatch.delenv("CI", raising=False)  # CI runs set it, and the guard refuses then
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setattr(settings, "DATABASE_URL", f"postgresql+asyncpg://u:p@{host}:5544/db")
 
     assert seed_dev.refusal_reason() is None
+    # The same rules as the import's target `local`, CI included.
+    monkeypatch.setenv("CI", "true")
+    reason = seed_dev.refusal_reason()
+    assert reason is not None and "CI" in reason

@@ -1,11 +1,17 @@
 """Time the title search against 50,000 synthetic titles (AC-24). A manual check, not run in CI.
 
     ENVIRONMENT=local uv run python scripts/bench_title_search.py [--titles 50000]
+    ENVIRONMENT=local uv run python scripts/bench_title_search.py --existing
 
 It adds the titles to the dev database, runs `VACUUM (ANALYZE)`, times about 200 searches (typos,
 words of a name, franchises, prefixes) and prints the median, the 95th percentile and the slowest
 times in milliseconds. The target is a p95 under 150 ms. The titles use a small vocabulary, so a
 typical search word matches about 2% of them: harder than real titles.
+
+With `--existing` (AC-20) it inserts and deletes nothing. It times the same kinds of searches
+against the titles already in the database (the imported list), made from names and franchises
+drawn from that list with a fixed seed, plus "the" and "zlda". It runs `VACUUM (ANALYZE) titles`
+first, which changes no row. Run it after `import_titles.py` on the content database.
 
 Synthetic titles are found by the year `BENCH_YEAR`, a name of the generated shape
 (`BENCH_NAME_PATTERN`) and the video game kind. The script deletes them at the start, in case an
@@ -34,11 +40,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from seed_dev import refusal_reason
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from app.content.target import refusal_reason
 from app.crud.title import create_title, search_titles
 from app.games.normalize import normalize_text
 from app.games.service import search_query
@@ -51,6 +57,8 @@ BENCH_YEAR = 9999
 _WORD = "[A-Z][a-z]+"
 BENCH_NAME_PATTERN = rf"^(The )?{_WORD} {_WORD}(: {_WORD} {_WORD}| of the {_WORD} {_WORD})? [0-9]+$"
 SEARCH_COUNT = 200
+# Always timed with `--existing`: a stop word, and a typo that only the trigram match finds.
+FIXED_QUERIES = ("the", "zlda")
 COMMIT_EVERY = 5_000
 SEED = 24
 
@@ -205,6 +213,30 @@ async def run(count: int) -> bool:
     return is_clean
 
 
+async def run_existing() -> bool:
+    """Time searches against the stored titles; nothing is inserted or deleted."""
+    from app.core.db import engine
+
+    try:
+        async with AsyncSession(engine) as db:
+            rows = await db.execute(
+                select(Title.name, Title.franchise, Title.year).where(
+                    Title.kind == TitleKind.VIDEO_GAME
+                )
+            )
+            titles = [(name, franchise, year) for name, franchise, year in rows]
+        if not titles:
+            print("The database has no titles. Run scripts/import_titles.py first.")
+            return False
+        print(f"Using {len(titles)} stored titles.")
+        queries = [*FIXED_QUERIES, *make_queries(random.Random(SEED), titles)]
+        await vacuum(engine)
+        await time_searches(engine, queries)
+    finally:
+        await engine.dispose()
+    return True
+
+
 async def time_searches(engine: AsyncEngine, queries: list[str]) -> None:
     timed: list[tuple[float, str, int]] = []
     async with engine.connect() as connection:
@@ -238,7 +270,7 @@ async def time_searches(engine: AsyncEngine, queries: list[str]) -> None:
         f"p95 {p95:.1f} ms, max {timings_ms[-1]:.1f} ms, "
         f"median result size {statistics.median(size for _e, _q, size in timed)}."
     )
-    print(f"AC-24 target: p95 under 150 ms. {'PASS' if p95 < 150 else 'FAIL'}.")
+    print(f"Latency target: p95 under 150 ms. {'PASS' if p95 < 150 else 'FAIL'}.")
 
 
 async def remove_bench_titles(engine: AsyncEngine, *, vacuum_when_empty: bool) -> None:
@@ -269,13 +301,27 @@ async def vacuum(engine: AsyncEngine) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Time the title search (AC-24).")
-    parser.add_argument("--titles", type=int, default=TITLE_COUNT, help="rows to insert")
+    parser.add_argument(
+        "--titles", type=int, default=None, help=f"rows to insert (default {TITLE_COUNT})"
+    )
+    parser.add_argument(
+        "--existing",
+        action="store_true",
+        help="time the titles already in the database; insert and delete nothing (AC-20)",
+    )
     args = parser.parse_args()
-    reason = refusal_reason()
+    if args.existing and args.titles is not None:
+        parser.error("--existing and --titles do not go together")
+    if args.titles is not None and args.titles < 1:
+        parser.error("--titles must be at least 1")
+    # The benchmark writes no media, so S3 storage does not matter here.
+    reason = refusal_reason(needs_local_storage=False)
     if reason is not None:
         print(f"Refusing to run the benchmark: {reason}.")
         return 1
-    return 0 if asyncio.run(run(args.titles)) else 1
+    if args.existing:
+        return 0 if asyncio.run(run_existing()) else 1
+    return 0 if asyncio.run(run(TITLE_COUNT if args.titles is None else args.titles)) else 1
 
 
 if __name__ == "__main__":

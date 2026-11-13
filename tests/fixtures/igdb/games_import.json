@@ -1,0 +1,121 @@
+[
+  {
+    "id": 2001,
+    "name": "Doom",
+    "slug": "doom",
+    "game_type": 0,
+    "total_rating_count": 900,
+    "first_release_date": 755827200,
+    "franchise": {
+      "id": 61,
+      "name": "Doom"
+    }
+  },
+  {
+    "id": 2002,
+    "name": "DOOM",
+    "slug": "doom",
+    "game_type": 0,
+    "total_rating_count": 100,
+    "first_release_date": 740000000,
+    "franchise": {
+      "id": 61,
+      "name": "Doom"
+    }
+  },
+  {
+    "id": 2003,
+    "name": "Doom",
+    "slug": "doom",
+    "game_type": 0,
+    "total_rating_count": 5000,
+    "first_release_date": 1463097600,
+    "franchise": {
+      "id": 61,
+      "name": "Doom"
+    }
+  },
+  {
+    "id": 2004,
+    "name": "Example Quest",
+    "slug": "example-quest",
+    "game_type": 0,
+    "total_rating_count": 10,
+    "first_release_date": 984614400,
+    "collections": [
+      {
+        "id": 72,
+        "name": "Zed Saga"
+      },
+      {
+        "id": 71,
+        "name": "Example  Series (series)"
+      }
+    ]
+  },
+  {
+    "id": 2005,
+    "name": "Example Quest Extra Levels",
+    "slug": "example-quest-extra-levels",
+    "game_type": 1,
+    "total_rating_count": 10,
+    "first_release_date": 984614400
+  },
+  {
+    "id": 2006,
+    "name": "Example Quest Deluxe",
+    "slug": "example-quest-deluxe",
+    "game_type": 0,
+    "total_rating_count": 10,
+    "version_parent": 2004,
+    "first_release_date": 984614400
+  },
+  {
+    "id": 2007,
+    "name": "Example Unrated",
+    "slug": "example-unrated",
+    "game_type": 0,
+    "total_rating_count": 0,
+    "first_release_date": 984614400
+  },
+  {
+    "id": 2008,
+    "name": "!!!",
+    "slug": "xxx",
+    "game_type": 0,
+    "total_rating_count": 10,
+    "first_release_date": 984614400
+  },
+  {
+    "id": 2009,
+    "name": "Example Mixed",
+    "slug": "example-mixed",
+    "game_type": 0,
+    "total_rating_count": 10,
+    "first_release_date": 1054425600,
+    "genres": [
+      {
+        "id": 1
+      },
+      {
+        "id": 2,
+        "name": "Adventure"
+      }
+    ]
+  },
+  {
+    "id": 2010,
+    "name": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "slug": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "game_type": 0,
+    "total_rating_count": 10,
+    "first_release_date": 1054425600
+  },
+  {
+    "id": 2011,
+    "name": "Example Undated",
+    "slug": "example-undated",
+    "game_type": 0,
+    "total_rating_count": 10
+  }
+]
