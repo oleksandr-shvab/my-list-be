@@ -4,20 +4,46 @@ Every random choice of a build comes from a seed that only the owner can make: a
 variant, slot and generator version, keyed with the secret `PUZZLE_SEED_SALT`. The public code and
 IGDB's public data are not enough to predict an answer without the salt. A plain hash would be.
 
+The salt stays a `SecretStr` until the HMAC call, so it is not in a `repr`, an `asdict` or a
+traceback with locals, and a `SlotSeed` cannot be pickled. The choices use only `random()` of the
+stream (the one method of the `random` module whose output is guaranteed across Python versions)
+through `draw_index` and `draw_distinct`, so a new Python cannot change a build.
+
 `GENERATOR_VERSION` belongs to the builder; it is raised whenever the choice logic changes, because
 the same inputs must then give other choices.
 """
 
 import hashlib
 import hmac
+import json
+import os
 import random
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+import sys
+from collections.abc import Iterable, Sequence
+from dataclasses import InitVar, dataclass, field
 from enum import StrEnum
+from typing import NoReturn
 
 from pydantic import SecretStr
 
-from app.core.config import Settings, is_weak_secret
+from app.core.config import DEV_MEDIA_SIGNING_KEY, MIN_SECRET_KEY_LENGTH, Settings, is_weak_secret
+
+# The salt the tests use. It is public, so `check_salt` refuses it, and a `SlotSeed` takes it only
+# while pytest runs (`under_pytest`): a script cannot build a seed with it.
+TEST_SALT = "pytest-fixed-salt-0123456789-abcdefghijklmnopqrstuvwxyz"
+# Values that are in the repo or its docs, so anybody can try them. `.env.example` ships the first.
+PUBLIC_SALTS = frozenset(
+    {
+        TEST_SALT,
+        DEV_MEDIA_SIGNING_KEY,
+        "change-me-to-a-random-string-of-at-least-32-characters",
+    }
+)
+# A text that says it is a placeholder is refused, whatever its length.
+PLACEHOLDER_MARKERS = ("change-me", "dev-only", "do-not-use")
+# A salt of at least 32 characters that uses fewer different characters is not random ("aaaa...",
+# "abababab..."). A random 32-character hex text has about 14, a base64 one about 26.
+MIN_DISTINCT_CHARACTERS = 10
 
 
 class SaltError(Exception):
@@ -33,21 +59,41 @@ class Purpose(StrEnum):
     CLIP = "clip"
 
 
-def check_salt(
-    salt: SecretStr | str | None, other_secrets: Iterable[SecretStr | str | None]
-) -> str:
-    """The salt as text, or `SaltError` when it is missing, weak (the rule of `SECRET_KEY`) or equal
-    to another secret of the project (AC-27). The builder calls it before it reads IGDB."""
-    value = salt.get_secret_value() if isinstance(salt, SecretStr) else salt
-    if not value:
+def under_pytest() -> bool:
+    """True only while a test runs. A script does not run under pytest."""
+    return "pytest" in sys.modules and "PYTEST_CURRENT_TEST" in os.environ
+
+
+def check_salt(salt: SecretStr | None, other_secrets: Iterable[SecretStr | None] = ()) -> SecretStr:
+    """The salt, or `SaltError` when it is missing, weak (the rule of `SECRET_KEY`), public (the
+    test salt, a dev default, a placeholder), too regular, or equal to another secret of the
+    project (AC-27). The builder calls it before it reads IGDB.
+
+    No text of the salt is kept in a local variable here, so a traceback with locals never shows it.
+    """
+    if salt is None or not salt.get_secret_value():
         raise SaltError("PUZZLE_SEED_SALT is not set")
-    if is_weak_secret(value):
+    if is_weak_secret(salt.get_secret_value()):
         raise SaltError("PUZZLE_SEED_SALT is a placeholder or too short")
+    if salt.get_secret_value() in PUBLIC_SALTS or any(
+        marker in salt.get_secret_value().lower() for marker in PLACEHOLDER_MARKERS
+    ):
+        raise SaltError("PUZZLE_SEED_SALT is a value that is in the public repo or its docs")
+    if len(set(salt.get_secret_value())) < MIN_DISTINCT_CHARACTERS:
+        raise SaltError(
+            f"PUZZLE_SEED_SALT is too regular: use at least {MIN_DISTINCT_CHARACTERS} different "
+            f"characters among {MIN_SECRET_KEY_LENGTH} or more"
+        )
     for other in other_secrets:
-        other_value = other.get_secret_value() if isinstance(other, SecretStr) else other
-        if other_value and hmac.compare_digest(value.encode(), other_value.encode()):
+        if (
+            other is not None
+            and other.get_secret_value()
+            and hmac.compare_digest(
+                salt.get_secret_value().encode(), other.get_secret_value().encode()
+            )
+        ):
             raise SaltError("PUZZLE_SEED_SALT must differ from every other secret")
-    return value
+    return salt
 
 
 def reserved_secrets(
@@ -68,18 +114,49 @@ def _hmac(key: bytes, message: str) -> bytes:
 
 @dataclass(frozen=True)
 class SlotSeed:
-    """The seed of one build slot. The salt is left out of `repr`, so it never reaches a log."""
+    """The seed of one build slot. Making one checks the salt (`check_salt`, with
+    `other_secrets`), so a missing, weak or public salt cannot make a seed. The test salt is the
+    one exception, and only while pytest runs."""
 
-    salt: str = field(repr=False)
+    salt: SecretStr = field(repr=False)
     slug: str
     variant: str
     slot: int
     version: str
+    other_secrets: InitVar[Iterable[SecretStr | None]] = ()
+
+    def __post_init__(self, other_secrets: Iterable[SecretStr | None]) -> None:
+        if self.salt is not None and self.salt.get_secret_value() == TEST_SALT:
+            if not under_pytest():
+                raise SaltError("the test salt is for tests only")
+            return
+        check_salt(self.salt, other_secrets)
+
+    def __reduce__(self) -> NoReturn:
+        raise TypeError("a SlotSeed holds the salt and cannot be pickled or copied")
 
     @property
     def seed(self) -> bytes:
-        return _hmac(self.salt.encode(), f"{self.slug}:{self.variant}:{self.slot}:{self.version}")
+        # A JSON array, so no field can run into the next one ("a:b" and "c" against "a" and
+        # "b:c"), and a number stays apart from text.
+        message = json.dumps([self.slug, self.variant, self.slot, self.version], ensure_ascii=True)
+        return _hmac(self.salt.get_secret_value().encode(), message)
 
     def stream(self, purpose: Purpose) -> random.Random:
         """A fresh stream for one purpose: the same slot and purpose always give the same numbers."""
         return random.Random(int.from_bytes(_hmac(self.seed, purpose), "big"))
+
+
+def draw_index(stream: random.Random, bound: int) -> int:
+    """An index in `range(bound)` from one `random()` (guaranteed stable across Python versions)."""
+    if bound < 1:
+        raise ValueError("bound must be at least 1")
+    return min(int(stream.random() * bound), bound - 1)
+
+
+def draw_distinct[T](stream: random.Random, items: Sequence[T], count: int) -> list[T]:
+    """`count` different items, in drawing order: each draw takes one item out of what is left."""
+    if not 0 <= count <= len(items):
+        raise ValueError("cannot draw that many items")
+    left = list(items)
+    return [left.pop(draw_index(stream, len(left))) for _ in range(count)]

@@ -8,19 +8,24 @@ from collections import Counter
 from typing import Any
 
 import pytest
+from pydantic import SecretStr, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.content.candidates import (
     CANDIDATE_TYPES,
+    REBUILD_SCREENSHOTS,
     REQUIRED_SCREENSHOTS,
     NotBuildableError,
     assign_screenshots,
+    candidates_where,
     choose_answer,
     funnel,
     never_igdb_ids,
+    rebuild_avoid_ids,
+    rebuild_reserved_igdb_ids,
 )
 from app.content.igdb import IgdbGame, parse_game
-from app.content.seed import Purpose, SlotSeed
+from app.content.seed import TEST_SALT, Purpose, SlotSeed
 from app.content.settings import ContentSettings
 from app.content.titles_import import IN_SCOPE_TYPES, in_scope
 from app.crud.exclusion import list_exclusions
@@ -32,7 +37,6 @@ from tests.factories import create_game, create_puzzle
 
 TODAY = dt.date(2026, 11, 13)
 SETTINGS = ContentSettings(_env_file=None)
-SALT = "test-salt-" + "a" * 40
 
 
 def shots(
@@ -71,8 +75,8 @@ def passed(games: list[IgdbGame], **funnel_args: Any) -> list[int]:
     return [step.passed for step in funnel(games, today=TODAY, settings=SETTINGS, **args).steps]
 
 
-FILTER_COUNT = 7  # game type, age, ratings, screenshots, slug, never, earlier answer
-# Each row: a game, the funnel arguments, and the filter (1 to 7) that drops it. 0 means it passes.
+FILTER_COUNT = 8  # type, age, ratings, screenshots, slug, never, reserved for a rebuild, earlier
+# Each row: a game, the funnel arguments, and the filter (1 to 8) that drops it. 0 means it passes.
 ROWS: list[tuple[str, dict[str, Any], dict[str, Any], int]] = [
     ("an edition of another game", {"version_parent": 9}, {}, 1),
     ("a DLC", {"game_type": 1}, {}, 1),
@@ -106,7 +110,8 @@ ROWS: list[tuple[str, dict[str, Any], dict[str, Any], int]] = [
     ("a slug with a capital", {"slug": "Game-1"}, {}, 5),
     ("a slug with a trailing newline", {"slug": "game-1\n"}, {}, 5),
     ("rejected as never", {}, {"never_igdb_ids": {2}}, 6),
-    ("an earlier answer", {}, {"earlier_answer_igdb_ids": {2}}, 7),
+    ("reserved for a rebuild that is not built yet", {}, {"reserved_igdb_ids": {2}}, 7),
+    ("an earlier answer", {}, {"earlier_answer_igdb_ids": {2}}, 8),
 ]
 
 
@@ -142,6 +147,26 @@ def test__funnel__thresholds_are_settings_and_candidates_are_in_the_search_list(
     # R-20: the search list takes every candidate, so the import scope must cover the types.
     assert CANDIDATE_TYPES <= IN_SCOPE_TYPES
     assert all(in_scope(game) for game in result.candidates)
+    # The run asks IGDB only for rated candidate types (the import's floor of 1 rating, R-20).
+    assert candidates_where(SETTINGS) == (
+        "game_type = (0,8,9,10) & version_parent = null & total_rating_count >= 1"
+    )
+    assert candidates_where(
+        loose.model_copy(update={"CANDIDATE_RATING_FIELD": "aggregated_rating_count"})
+    ).endswith("aggregated_rating_count >= 1")
+    # A bad value is refused when the settings load. Ratings must stay at 1 or more (R-20).
+    for name, bad in [
+        ("CANDIDATE_MIN_RATINGS", 0),
+        ("CANDIDATE_MIN_AGE_DAYS", -1),
+        ("CANDIDATE_MIN_AGE_DAYS", 4000),
+        ("CANDIDATE_MIN_WIDTH", 0),
+        ("CANDIDATE_MIN_HEIGHT", 0),
+        ("CANDIDATE_MIN_SCREENSHOTS", 0),
+        ("CANDIDATE_RATING_FIELD", "rating_count"),
+    ]:
+        with pytest.raises(ValidationError, match=name):
+            ContentSettings(**{name: bad}, _env_file=None)  # type: ignore[arg-type]
+    assert ContentSettings(CANDIDATE_MIN_RATINGS=1, CANDIDATE_MIN_AGE_DAYS=0, _env_file=None)
 
 
 @pytest.mark.parametrize("screenshot_count", [7, 8, 12])
@@ -151,7 +176,9 @@ def test__assign_screenshots__crop_and_clip_never_reuse_a_step_screenshot(
     game = make_game(screenshots=shots(screenshot_count))
     clip_sizes = set()
     for slot in range(1, 41):
-        stream = SlotSeed(SALT, "game-guesser", "default", slot, "1").stream(Purpose.SCREENSHOTS)
+        stream = SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", slot, "1").stream(
+            Purpose.SCREENSHOTS
+        )
         plan = assign_screenshots(game, stream, set(), settings=SETTINGS)
         step_ids = [shot.image_id for shot in plan.steps]
         clip_ids = [shot.image_id for shot in plan.clip]
@@ -165,7 +192,7 @@ def test__assign_screenshots__crop_and_clip_never_reuse_a_step_screenshot(
 
 def test__assign_screenshots__skips_avoided_ones_and_ignores_input_order() -> None:
     game = make_game(screenshots=shots(10))
-    stream = SlotSeed(SALT, "game-guesser", "default", 1, "1").stream
+    stream = SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", 1, "1").stream
     avoid = {"shot00", "shot01", "shot02"}
     plan = assign_screenshots(game, stream(Purpose.SCREENSHOTS), avoid, settings=SETTINGS)
     used = {shot.image_id for shot in (*plan.steps, plan.crop, *plan.clip)}
@@ -181,6 +208,68 @@ def test__assign_screenshots__skips_avoided_ones_and_ignores_input_order() -> No
     assert choose_answer(list(reversed(candidates)), stream(Purpose.ANSWER)) == answer
     with pytest.raises(NotBuildableError):
         choose_answer([], stream(Purpose.ANSWER))
+
+
+def test__assign_screenshots__golden_plans_do_not_change_with_the_python_version() -> None:
+    """The draws use only `random()`, so these ids hold on any Python. If this goes red, the choice
+    logic changed: raise the builder's GENERATOR_VERSION."""
+    game = make_game(screenshots=shots(10))
+    plans = [
+        assign_screenshots(
+            game,
+            SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", slot, "1").stream(
+                Purpose.SCREENSHOTS
+            ),
+            set(),
+            settings=SETTINGS,
+        ).image_ids
+        for slot in (1, 2, 3)
+    ]
+    assert plans == [
+        ["shot07", "shot08", "shot03", "shot04", "shot05", "shot06", "shot09", "shot02"],
+        ["shot08", "shot00", "shot03", "shot01", "shot04", "shot05", "shot06"],
+        ["shot09", "shot00", "shot01", "shot07", "shot08", "shot06", "shot04"],
+    ]
+
+
+def test__assign_screenshots__a_rebuild_leaves_out_the_five_stills_and_may_reuse_the_clip() -> None:
+    game = make_game(screenshots=shots(12))
+    first = assign_screenshots(
+        game,
+        SlotSeed(SecretStr(TEST_SALT), "g", "default", 1, "1").stream(Purpose.SCREENSHOTS),
+        (),
+        settings=SETTINGS,
+    )
+    assert first.image_ids[0] == first.crop.image_id  # step order: crop, steps 2 to 5, clip
+    assert first.image_ids[1:5] == [shot.image_id for shot in first.steps]
+    avoid = rebuild_avoid_ids(first.image_ids)
+    assert len(avoid) == 5 and set(avoid) == {s.image_id for s in (first.crop, *first.steps)}
+    second = assign_screenshots(
+        game,
+        SlotSeed(SecretStr(TEST_SALT), "g", "default", 1, "2").stream(Purpose.SCREENSHOTS),
+        avoid,
+        settings=SETTINGS,
+    )
+    assert not set(second.image_ids) & set(avoid)
+    # 12 screenshots less the 5 stills leave exactly 7: the old clip's screenshots are used again.
+    assert set(first.image_ids[5:]) <= set(second.image_ids)
+    assert REBUILD_SCREENSHOTS == 12
+    # With 11 there is no way to change every still: the owner is told to reject as "never".
+    few = make_game(screenshots=shots(11))
+    with pytest.raises(NotBuildableError, match='reject the draft as "never"'):
+        assign_screenshots(few, second_stream(), avoid, settings=SETTINGS)
+    counter = funnel(
+        [make_game(1, screenshots=shots(11)), make_game(2, screenshots=shots(12))],
+        today=TODAY,
+        settings=SETTINGS,
+        earlier_answer_igdb_ids=(),
+        never_igdb_ids=(),
+    )
+    assert len(counter.candidates) == 2 and counter.survive_one_rebuild == 1
+
+
+def second_stream() -> Any:
+    return SlotSeed(SecretStr(TEST_SALT), "g", "default", 2, "1").stream(Purpose.SCREENSHOTS)
 
 
 async def test__earlier_answers_and_exclusions__come_from_every_status(
@@ -228,3 +317,7 @@ async def test__earlier_answers_and_exclusions__come_from_every_status(
     rows = await list_exclusions(db_session, game.id)
     assert len(rows) == 4
     assert never_igdb_ids(rows) == {100}
+    # The rebuild row reserves its title for slot 7 only: every other slot must not draw it.
+    assert rebuild_reserved_igdb_ids(rows) == {200}
+    assert rebuild_reserved_igdb_ids(rows, own_slot=("default", 8)) == {200}
+    assert rebuild_reserved_igdb_ids(rows, own_slot=("default", 7)) == set()

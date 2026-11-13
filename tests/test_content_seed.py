@@ -1,7 +1,10 @@
 """The seed and the salt of the puzzle builder (M1-22b, SPEC-04 AC-26 to AC-28, R-8).
 
-No database and no network. Every choice below uses a fixed test salt."""
+No database and no network. The tests use the public `TEST_SALT`, which a `SlotSeed` takes only
+under pytest."""
 
+import dataclasses
+import pickle
 import random
 from collections import Counter
 from types import SimpleNamespace
@@ -12,12 +15,27 @@ from pydantic import SecretStr
 
 from app.content.candidates import choose_answer
 from app.content.igdb import IgdbGame, parse_game
-from app.content.seed import Purpose, SaltError, SlotSeed, check_salt, reserved_secrets
+from app.content.seed import (
+    TEST_SALT,
+    Purpose,
+    SaltError,
+    SlotSeed,
+    check_salt,
+    draw_distinct,
+    draw_index,
+    reserved_secrets,
+)
 from app.content.settings import ContentSettings
+from app.core.config import DEV_MEDIA_SIGNING_KEY
 
-SALT = "test-salt-" + "a" * 40
-OTHER_SALT = "test-salt-" + "b" * 40
+# Two valid salts: long, with many different characters, not public.
+SALT = "k3Jq9vR2xWm7Lp0ZsT5nYc8HbD4fGa1eUo6iXw"
+OTHER_SALT = "Zp8Qm1Vc5Xr3Nk7Ty2Lh9Wb4Ds6Fj0GaEu1Io"
 OTHER_SECRET = "some-other-secret-" + "c" * 30
+
+
+def secret(value: str | None) -> SecretStr | None:
+    return None if value is None else SecretStr(value)
 
 
 def games(count: int) -> list[IgdbGame]:
@@ -34,51 +52,83 @@ def games(count: int) -> list[IgdbGame]:
     return found
 
 
+def seed_of(salt: str, slot: int = 1, *, version: str = "1") -> SlotSeed:
+    return SlotSeed(SecretStr(salt), "game-guesser", "default", slot, version)
+
+
 def answers(salt: str, candidates: list[IgdbGame], *, version: str = "1") -> list[int]:
     """The answer of slots 1 to 12."""
     return [
-        choose_answer(
-            candidates,
-            SlotSeed(salt, "game-guesser", "default", slot, version).stream(Purpose.ANSWER),
-        ).id
+        choose_answer(candidates, seed_of(salt, slot, version=version).stream(Purpose.ANSWER)).id
         for slot in range(1, 13)
     ]
 
 
-@pytest.mark.parametrize(
-    ("salt", "others", "message"),
-    [
-        (None, [], "is not set"),
-        (SecretStr(""), [], "is not set"),
-        ("short", [], "too short"),
-        ("change-me", [], "too short"),
-        (SALT, [OTHER_SECRET, SALT], "must differ"),
-        (SecretStr(SALT), [SecretStr(SALT)], "must differ"),
-    ],
-)
-def test__check_salt__refuses_a_missing_weak_or_reused_salt(
-    salt: Any, others: list[Any], message: str
+# Each row is a salt that must be refused, and the words of the reason.
+REFUSED = [
+    (None, "is not set"),
+    ("", "is not set"),
+    ("short", "too short"),
+    ("Zq8Xk2Lm9Pw4Rt6Yv1Nb", "too short"),  # 20 characters: weak, and not in the message
+    ("change-me", "too short"),
+    (TEST_SALT, "public repo"),  # the tests' own salt
+    (DEV_MEDIA_SIGNING_KEY, "public repo"),  # a dev default
+    ("change-me-to-a-random-string-of-at-least-32-characters", "public repo"),  # .env.example
+    ("my-own-dev-only-salt-" + "Zx9" * 6, "public repo"),  # says it is a placeholder
+    ("a" * 40, "too regular"),
+    ("ab12" * 10, "too regular"),
+    ("abcdefghi" * 5, "too regular"),  # nine different characters
+    (SALT, "must differ"),  # equal to another secret, below
+]
+
+
+@pytest.mark.parametrize(("salt", "message"), REFUSED)
+def test__check_salt__refuses_a_missing_weak_public_regular_or_reused_salt(
+    salt: str | None, message: str
 ) -> None:
     with pytest.raises(SaltError, match=message) as refusal:
-        check_salt(salt, others)
-    assert SALT not in str(refusal.value)
-    assert check_salt(SALT, [OTHER_SECRET, None, SecretStr(OTHER_SECRET)]) == SALT
+        check_salt(secret(salt), [secret(OTHER_SECRET), None, SecretStr(SALT)])
+    assert len(salt or "") < 12 or salt not in str(refusal.value)
+    # The same salt is accepted when nothing is wrong with it (the reused one, with no clash).
+    assert check_salt(SecretStr(SALT), [secret(OTHER_SECRET), None]).get_secret_value() == SALT
 
 
 @pytest.mark.parametrize("name", ["SECRET_KEY", "MEDIA_SIGNING_KEY", "S3_SECRET_ACCESS_KEY"])
 def test__reserved_secrets__every_secret_of_the_project_is_refused(name: str) -> None:
     secrets = {
-        "SECRET_KEY": "app-secret-" + "1" * 30,
-        "MEDIA_SIGNING_KEY": "media-key-" + "2" * 30,
-        "S3_SECRET_ACCESS_KEY": "bucket-key-" + "3" * 30,
+        "SECRET_KEY": "app-secret-" + "1Ab2Cd3Ef" * 3,
+        "MEDIA_SIGNING_KEY": "media-key-" + "4Gh5Ij6Kl" * 3,
+        "S3_SECRET_ACCESS_KEY": "bucket-key-" + "7Mn8Op9Qr" * 3,
     }
+    igdb_secret = "igdb-secret-" + "0St1Uv2Wx" * 3
     app_settings: Any = SimpleNamespace(**{key: SecretStr(value) for key, value in secrets.items()})
-    others = reserved_secrets(app_settings, SecretStr("igdb-secret-" + "4" * 30))
+    others = reserved_secrets(app_settings, SecretStr(igdb_secret))
+    for reused in (secrets[name], igdb_secret):
+        with pytest.raises(SaltError, match="must differ"):
+            check_salt(SecretStr(reused), others)
+    assert check_salt(SecretStr(SALT), others).get_secret_value() == SALT
+
+
+def test__slot_seed__a_bad_salt_cannot_make_a_seed_and_the_salt_stays_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for salt, _ in REFUSED[:-1]:
+        if salt != TEST_SALT:  # the test salt is allowed under pytest, checked below
+            with pytest.raises(SaltError):
+                SlotSeed(secret(salt), "game-guesser", "default", 1, "1")  # type: ignore[arg-type]
     with pytest.raises(SaltError, match="must differ"):
-        check_salt(secrets[name], others)
-    with pytest.raises(SaltError, match="must differ"):
-        check_salt("igdb-secret-" + "4" * 30, others)
-    assert check_salt(SALT, others) == SALT
+        SlotSeed(SecretStr(SALT), "game-guesser", "default", 1, "1", [SecretStr(SALT)])
+    assert SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", 1, "1").seed  # under pytest
+    # A script does not run under pytest, so it cannot take the test-salt path.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    with pytest.raises(SaltError, match="tests only"):
+        SlotSeed(SecretStr(TEST_SALT), "game-guesser", "default", 1, "1")
+    seed = seed_of(SALT)
+    shown = repr(seed) + str(seed) + repr(dataclasses.asdict(seed))
+    shown += repr(ContentSettings(PUZZLE_SEED_SALT=SecretStr(SALT), _env_file=None))
+    assert SALT not in shown
+    with pytest.raises(TypeError, match="cannot be pickled"):
+        pickle.dumps(seed)
 
 
 def test__slot_seed__one_salt_repeats_and_another_salt_chooses_otherwise() -> None:
@@ -87,16 +137,35 @@ def test__slot_seed__one_salt_repeats_and_another_salt_chooses_otherwise() -> No
     assert answers(SALT, list(reversed(candidates))) == first
     assert answers(OTHER_SALT, candidates) != first
     assert answers(SALT, candidates, version="2") != first
-    seed = SlotSeed(SALT, "game-guesser", "default", 7, "1")
+    seed = seed_of(SALT, 7)
     numbers = {purpose: [seed.stream(purpose).random() for _ in range(2)] for purpose in Purpose}
     assert all(pair[0] == pair[1] for pair in numbers.values())
     assert len({pair[0] for pair in numbers.values()}) == len(Purpose)
-    other = SlotSeed(OTHER_SALT, "game-guesser", "default", 7, "1")
-    assert other.stream(Purpose.CROP).random() != seed.stream(Purpose.CROP).random()
+    assert seed_of(OTHER_SALT, 7).stream(Purpose.CROP).random() != numbers[Purpose.CROP][0]
+    # A colon in a field cannot move a field into its neighbour.
+    ambiguous = [("a:b", "c"), ("a", "b:c"), ("a", "b"), ("a:b", "")]
+    seeds = {SlotSeed(SecretStr(SALT), slug, variant, 1, "1").seed for slug, variant in ambiguous}
+    assert len(seeds) == len(ambiguous)
     assert isinstance(seed.stream(Purpose.CLIP), random.Random)
 
 
-def test__salt__is_never_in_a_repr() -> None:
-    seed = SlotSeed(SALT, "game-guesser", "default", 1, "1")
-    settings = ContentSettings(PUZZLE_SEED_SALT=SecretStr(SALT), _env_file=None)
-    assert SALT not in repr(seed) + str(seed) + repr(settings) + str(settings)
+GOLDEN_ANSWERS = [16, 39, 14, 33, 27, 9, 6, 32, 5, 8]
+GOLDEN_INDEXES = [7, 8, 4, 4, 4, 7, 7, 7]
+GOLDEN_DISTINCT = ["h", "i", "d", "c"]
+
+
+def test__draws__give_the_same_numbers_on_every_python_version() -> None:
+    """A golden test: the draws use only `random()`, so these ids hold on any Python. If this goes
+    red, the choice logic changed: raise the builder's GENERATOR_VERSION."""
+    candidates = games(50)
+    chosen = [
+        choose_answer(candidates, seed_of(TEST_SALT, slot).stream(Purpose.ANSWER)).id
+        for slot in range(1, 11)
+    ]
+    assert chosen == GOLDEN_ANSWERS
+    stream = seed_of(TEST_SALT, 1).stream(Purpose.SCREENSHOTS)
+    assert [draw_index(stream, 10) for _ in range(8)] == GOLDEN_INDEXES
+    stream = seed_of(TEST_SALT, 1).stream(Purpose.SCREENSHOTS)
+    assert draw_distinct(stream, list("abcdefghij"), 4) == GOLDEN_DISTINCT
+    with pytest.raises(ValueError, match="cannot draw"):
+        draw_distinct(stream, [1, 2], 3)

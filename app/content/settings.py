@@ -7,7 +7,7 @@ never imports `app/content/`.
 
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.config import PROJECT_ROOT
@@ -34,11 +34,13 @@ class ContentSettings(BaseSettings):
 
     # Who may be an answer (AC-21, AC-22): the start values, for the owner to tune after measuring
     # them with `scripts/build_puzzles.py --counts` (AC-24).
-    CANDIDATE_MIN_RATINGS: int = 50
-    CANDIDATE_MIN_SCREENSHOTS: int = 7
-    CANDIDATE_MIN_WIDTH: int = 1280
-    CANDIDATE_MIN_HEIGHT: int = 720
-    CANDIDATE_MIN_AGE_DAYS: int = 365
+    # At least 1 rating: the title import keeps games with one, and the search list must hold every
+    # candidate (R-20). Fewer than 7 screenshots is raised to 7 by the funnel (a build needs 7).
+    CANDIDATE_MIN_RATINGS: int = Field(50, ge=1, le=10_000_000)
+    CANDIDATE_MIN_SCREENSHOTS: int = Field(7, ge=1, le=100)
+    CANDIDATE_MIN_WIDTH: int = Field(1280, ge=1, le=10_000)
+    CANDIDATE_MIN_HEIGHT: int = Field(720, ge=1, le=10_000)
+    CANDIDATE_MIN_AGE_DAYS: int = Field(365, ge=0, le=3650)
     # What "ratings" means (Open point 3): IGDB's `total_rating_count` (users and critics), or
     # `aggregated_rating_count` (critics only).
     CANDIDATE_RATING_FIELD: Literal["total_rating_count", "aggregated_rating_count"] = (
