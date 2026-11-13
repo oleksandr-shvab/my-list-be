@@ -349,3 +349,14 @@ async def test__import__a_new_record_with_the_name_and_year_of_a_stored_title_is
     assert (counts.added, counts.near_duplicates) == (1, 1)
     count = await db_session.scalar(select(func.count()).select_from(Title))
     assert count == 2
+
+    # An update onto the name and year of another stored title is a near-duplicate too.
+    renamed = await upsert_titles(
+        db_session, [make_record(2, "portal", first_release_date=1191974400)]
+    )
+
+    assert (renamed.updated, renamed.near_duplicates) == (0, 1)
+    assert [title.year for title in await db_session.scalars(select(Title).order_by(Title.id))] == [
+        2007,
+        2011,
+    ]
