@@ -189,6 +189,23 @@ def test__clip__is_a_silent_12_second_h264_mp4_and_the_poster_is_its_first_frame
         assert mean_difference(poster_image, decoded_frame(out, 150)) > 10
 
 
+def test__clip__slow_full_size_default_clip_fits_the_limits(
+    tmp_path: Path, shots: list[Path]
+) -> None:
+    """The real clip: no size, fps or length given, so the defaults are what is checked (about 5 s)."""
+    out = tmp_path / "clip.mp4"
+
+    facts = media.clip(shots, out, random.Random(1))
+
+    assert (facts.width, facts.height) == (1280, 720)
+    assert facts.duration_ms == 12_000
+    assert facts.byte_size <= 4 * MB
+    assert media.broken_limits(facts) == []
+    with av.open(str(out)) as container:
+        assert len(container.streams) == 1
+        assert container.streams.video[0].codec_context.name == "h264"
+
+
 def test__clip__over_the_size_limit_is_refused_and_leaves_no_file(
     tmp_path: Path, shots: list[Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
