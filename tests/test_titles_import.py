@@ -34,6 +34,7 @@ from app.content.titles_import import (
 )
 from app.crud.title import create_title
 from app.models.progress import Progress, ProgressGuess, ProgressOrigin
+from app.models.puzzle import Puzzle
 from app.models.title import Title
 from app.models.user import User
 from tests.factories import create_game, create_puzzle
@@ -299,6 +300,84 @@ async def test__import__fixture_run_keeps_one_doom_per_year_and_a_second_run_cha
     assert "items dropped from records that were kept: 1" in lines
 
 
+async def test__import__near_duplicates_are_counted_and_a_tie_in_ratings_goes_to_the_lower_id(
+    db_session: AsyncSession,
+) -> None:
+    await create_title(db_session, name="Bar", year=2001, igdb_id=1)
+    mid_2001 = 995000000
+    records = [
+        make_record(1, "Foo", first_release_date=mid_2001, total_rating_count=5),
+        # A new game with more ratings loses the name to the stored title that takes it.
+        make_record(4, "Foo", first_release_date=mid_2001, total_rating_count=900),
+        # Two new games with the same ratings: the lower IGDB id is added, the other is left out.
+        make_record(6, "QUUX", first_release_date=mid_2001, total_rating_count=7),
+        make_record(5, "Quux", first_release_date=mid_2001, total_rating_count=7),
+    ]
+
+    counts = await upsert_titles(db_session, records)
+
+    result = await db_session.execute(select(Title.igdb_id, Title.name).order_by(Title.igdb_id))
+    assert result.tuples().all() == [(1, "Foo"), (5, "Quux")]
+    assert (counts.added, counts.updated, counts.near_duplicates) == (1, 1, 2)
+
+
+def test__report__lists_every_count_and_at_most_twenty_refused_ids() -> None:
+    selection = titles_import.Selection(
+        out_of_scope=2,
+        name_problems=Counter({NameProblem.UNUSABLE: 1, NameProblem.TOO_LONG: 3}),
+    )
+    counts = titles_import.UpsertCounts(
+        added=4, updated=3, unchanged=2, near_duplicates=7, refused=25
+    )
+    counts.refused_title_ids = list(range(1, 26))
+    report = ImportReport(
+        selection,
+        counts,
+        skipped=Counter({SkipReason.YEAR_OUT_OF_RANGE: 2, SkipReason.WRONG_SHAPE: 1}),
+        dropped=Counter({DropReason.GENRE_INVALID: 1}),
+    )
+
+    lines = report.lines()
+
+    assert lines == [
+        "titles added: 4",
+        "titles updated: 3",
+        "titles unchanged: 2",
+        "kept as near-duplicates (not added): 7",
+        "refused to change, would break a stored game (AC-18): 25",
+        "records skipped as invalid (AC-8): 3 (wrong_shape: 1, year_out_of_range: 2)",
+        "items dropped from records that were kept: 1 (genre_invalid: 1)",
+        "records out of scope: 2",
+        "records with a name that does not fit the list: 4 (too long: 3, unusable: 1)",
+        f"refused title ids: {', '.join(str(n) for n in range(1, 21))} and 5 more",
+    ]
+    # Exactly twenty fit: nothing more to say.
+    counts.refused_title_ids = list(range(1, 21))
+    assert report.lines()[-1] == f"refused title ids: {', '.join(str(n) for n in range(1, 21))}"
+
+
+async def play_stored_game(db: AsyncSession, puzzle: Puzzle, *, guessed: list[Title]) -> None:
+    """A stored game of somebody on `puzzle`, with these titles as its guesses (R-15)."""
+    user = User(email="player@example.com", hashed_password="not-a-real-hash")
+    db.add(user)
+    await db.flush()
+    progress = Progress(
+        user_id=user.id,
+        puzzle_id=puzzle.id,
+        status="in_progress",
+        started_at=dt.datetime(2026, 11, 1, tzinfo=dt.UTC),
+        counts_for_streak=True,
+        origin=ProgressOrigin.PLAY,
+    )
+    db.add(progress)
+    await db.flush()
+    db.add_all(
+        ProgressGuess(progress_id=progress.id, position=position, title_id=title.id)
+        for position, title in enumerate(guessed, start=1)
+    )
+    await db.flush()
+
+
 async def test__import__never_deletes_and_refuses_what_would_break_a_stored_game(
     db_session: AsyncSession,
 ) -> None:
@@ -318,26 +397,7 @@ async def test__import__never_deletes_and_refuses_what_would_break_a_stored_game
         db_session, game=game, answer=ids[2], puzzle_date=dt.date(2026, 11, 1)
     )
     await create_puzzle(db_session, game=game, answer=ids[4], puzzle_date=dt.date(2026, 11, 2))
-    user = User(email="player@example.com", hashed_password="not-a-real-hash")
-    db_session.add(user)
-    await db_session.flush()
-    progress = Progress(
-        user_id=user.id,
-        puzzle_id=played.id,
-        status="in_progress",
-        started_at=dt.datetime(2026, 11, 1, tzinfo=dt.UTC),
-        counts_for_streak=True,
-        origin=ProgressOrigin.PLAY,
-    )
-    db_session.add(progress)
-    await db_session.flush()
-    db_session.add_all(
-        [
-            ProgressGuess(progress_id=progress.id, position=1, title_id=ids[1].id),
-            ProgressGuess(progress_id=progress.id, position=2, title_id=ids[3].id),
-        ]
-    )
-    await db_session.flush()
+    await play_stored_game(db_session, played, guessed=[ids[1], ids[3]])
 
     second = [
         make_record(1, "Guessed Again", franchise={"id": 1, "name": "Old"}),  # renamed: refused
@@ -436,6 +496,24 @@ ORDER_CASES = {
         [(1, "C", 2001, 5, None), (2, "A", 2001, 5, None)],
         {(None, "C", None), (1, "A", None), (2, "B", None)},
     ),
+    # The block goes down a long chain: each stored title wants the old name of the one before it,
+    # and the first wants a name that a title outside the run holds.
+    "blocked_rename_blocks_a_chain_four_deep": (
+        [(None, "E", 2001), (1, "A", 2001), (2, "B", 2001), (3, "C", 2001), (4, "D", 2001)],
+        [
+            (1, "E", 2001, 5, None),
+            (2, "A", 2001, 5, None),
+            (3, "B", 2001, 5, None),
+            (4, "C", 2001, 5, None),
+        ],
+        {(None, "E", None), (1, "A", None), (2, "B", None), (3, "C", None), (4, "D", None)},
+    ),
+    # No year matches no year (AC-14): an undated title outside the run holds the undated name.
+    "undated_title_outside_holds_the_undated_name": (
+        [(None, "C", None), (1, "A", None)],
+        [(1, "C", None, 5, None), (2, "C", None, 900, None)],
+        {(None, "C", None), (1, "A", None)},
+    ),
     # A rename that a title outside the run blocks still writes the franchise.
     "blocked_rename_keeps_its_franchise": (
         [(None, "C", 2001), (1, "A", 2001)],
@@ -473,14 +551,14 @@ ORDER_CASES = {
 )
 async def test__import__result_does_not_depend_on_the_order_and_a_second_run_changes_nothing(
     db_session: AsyncSession,
-    stored: list[tuple[int | None, str, int]],
-    run: list[tuple[int, str, int, int, str | None]],
+    stored: list[tuple[int | None, str, int | None]],
+    run: list[tuple[int, str, int | None, int, str | None]],
     expected: set[tuple[int | None, str, str | None]],
 ) -> None:
     for igdb_id, name, year in stored:
         await create_title(db_session, name=name, year=year, igdb_id=igdb_id)
     # Mid-2001 and mid-2002 timestamps are far from a year edge.
-    released = {2001: 995000000, 2002: 1030000000}
+    released = {2001: 995000000, 2002: 1030000000, None: None}
 
     async def run_once() -> titles_import.UpsertCounts:
         games = [
@@ -511,3 +589,61 @@ async def test__import__result_does_not_depend_on_the_order_and_a_second_run_cha
     assert first.commits == (1 if first.updated else 0) + first.added
     assert (second.added, second.updated, second.refused) == (0, 0, 0)
     assert await stored_now() == after_first
+
+
+async def test__import__a_run_of_many_batches_looks_up_plans_and_commits_in_every_batch(
+    db_session: AsyncSession,
+) -> None:
+    for igdb_id, name in [(1, "One"), (2, "Two"), (3, "Three")]:
+        await create_title(db_session, name=name, year=2001, igdb_id=igdb_id)
+    await create_title(db_session, name="Held", year=2001)  # made by hand, no IGDB id
+    answer = await create_title(db_session, name="Answer", year=2001)
+    guessed = await db_session.scalar(select(Title).where(Title.igdb_id == 1))
+    assert guessed is not None
+    puzzle = await create_puzzle(
+        db_session,
+        game=await create_game(db_session),
+        answer=answer,
+        puzzle_date=dt.date(2026, 11, 1),
+    )
+    await play_stored_game(db_session, puzzle, guessed=[guessed])
+    # Three stored titles and eight records, two to a batch: the lookup of the stored titles, of
+    # those a stored game uses and of the holders of a key each take several batches, the title
+    # a stored game uses is in the first one, and the hand-made title's key is in a late one.
+    records = [
+        make_record(igdb_id, name, first_release_date=995000000)  # mid-2001
+        for igdb_id, name in [
+            (1, "One Renamed"),  # refused
+            (2, "Two Renamed"),
+            (3, "Three Renamed"),
+            (4, "Four"),
+            (5, "Five"),
+            (6, "Held"),  # a near-duplicate of the hand-made title
+            (7, "Seven"),
+            (8, "Eight"),
+        ]
+    ]
+
+    first = await upsert_titles(db_session, records, batch_size=2)
+    second = await upsert_titles(db_session, records, batch_size=2)
+
+    result = await db_session.execute(select(Title.igdb_id, Title.name).where(Title.igdb_id > 0))
+    assert sorted(result.tuples().all()) == [
+        (1, "One"),
+        (2, "Two Renamed"),
+        (3, "Three Renamed"),
+        (4, "Four"),
+        (5, "Five"),
+        (7, "Seven"),
+        (8, "Eight"),
+    ]
+    assert await db_session.scalar(select(func.count()).select_from(Title)) == 9
+    # One commit for the updates, then one for each batch of two added titles.
+    assert (first.refused, first.updated, first.added, first.near_duplicates, first.commits) == (
+        1,
+        2,
+        4,
+        1,
+        3,
+    )
+    assert (second.updated, second.added, second.refused, second.commits) == (0, 0, 1, 0)
