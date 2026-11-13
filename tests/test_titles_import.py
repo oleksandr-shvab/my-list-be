@@ -6,6 +6,7 @@ No network: the IGDB client reads `tests/fixtures/igdb/games_import.json` over
 import datetime as dt
 import json
 from collections import Counter
+from collections.abc import AsyncIterator, Collection
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -31,7 +32,7 @@ from app.content.titles_import import (
     to_record,
     upsert_titles,
 )
-from app.crud.title import create_title
+from app.crud.title import create_title, list_igdb_ids
 from app.models.progress import Progress, ProgressGuess, ProgressOrigin
 from app.models.title import Title
 from app.models.user import User
@@ -62,7 +63,9 @@ def make_record(igdb_id: int, name: str, **fields: Any) -> ImportRecord:
     return record
 
 
-async def read_fixture() -> ImportReport:
+async def read_fixture(
+    stored_ids: Collection[int] = (),
+) -> ImportReport:
     """A whole run over the fake IGDB, up to the upsert, like `scripts/import_titles.py`."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -74,7 +77,9 @@ async def read_fixture() -> ImportReport:
     async with IgdbClient(
         "fixture-id", SecretStr("fixture-secret"), transport=httpx.MockTransport(handler)
     ) as igdb:
-        selection = await select_records(igdb.games(now=NOW, where=IGDB_WHERE))
+        selection = await select_records(
+            igdb.games(now=NOW, where=IGDB_WHERE), stored_ids=stored_ids
+        )
         return ImportReport(
             selection, titles_import.UpsertCounts(), skipped=igdb.skipped, dropped=igdb.dropped
         )
@@ -103,6 +108,11 @@ REMOTE_SETTINGS = SimpleNamespace(
         ("production", "production", {"ENVIRONMENT": "production"}, REMOTE_SETTINGS, None, False),
         ("production", None, {"ENVIRONMENT": "production"}, REMOTE_SETTINGS, "production", False),
         ("local", None, {"ENVIRONMENT": "local", "CI": "true"}, LOCAL_SETTINGS, None, True),
+        ("local", None, {"ENVIRONMENT": "local", "CI": "1"}, LOCAL_SETTINGS, None, True),
+        ("local", None, {"ENVIRONMENT": "local", "CI": "false"}, LOCAL_SETTINGS, None, False),
+        ("local", None, {"ENVIRONMENT": "local", "CI": "0"}, LOCAL_SETTINGS, None, False),
+        ("local", None, {"ENVIRONMENT": "local", "CI": " No "}, LOCAL_SETTINGS, None, False),
+        ("local", None, {"ENVIRONMENT": "local", "CI": ""}, LOCAL_SETTINGS, None, False),
         (None, None, {"ENVIRONMENT": "local"}, LOCAL_SETTINGS, None, True),
         ("production", "production", {"ENVIRONMENT": "local"}, REMOTE_SETTINGS, None, True),
         ("local", None, {}, LOCAL_SETTINGS, None, True),
@@ -116,6 +126,11 @@ REMOTE_SETTINGS = SimpleNamespace(
         "remote_confirmed",
         "remote_typed",
         "ci",
+        "ci_1",
+        "ci_false",
+        "ci_0",
+        "ci_no",
+        "ci_empty",
         "no_target",
         "target_differs_from_environment",
         "no_environment",
@@ -174,6 +189,12 @@ ZELDA_OVERRIDE = {(FranchiseSource.COLLECTION, 3): "The Legend of Zelda"}
         ({"collections": [{"id": 3, "name": "(series)"}, {"id": 4, "name": "Next"}]}, {}, "Next"),
         ({"collections": [{"id": 3, "name": "Zelda"}]}, ZELDA_OVERRIDE, "The Legend of Zelda"),
         ({"collections": [{"id": 3, "name": "N" * 256}]}, {}, None),
+        # 60 characters that NFKD turns into 1,080: too long once normalized.
+        (
+            {"collections": [{"id": 3, "name": "\ufdfa" * 60}, {"id": 4, "name": "Fits"}]},
+            {},
+            "Fits",
+        ),
     ],
     ids=[
         "main_franchise_first",
@@ -183,6 +204,7 @@ ZELDA_OVERRIDE = {(FranchiseSource.COLLECTION, 3): "The Legend of Zelda"}
         "empty_after_cleaning_passes_to_next",
         "override_applied",
         "too_long_for_the_column",
+        "too_long_once_normalized",
     ],
 )
 def test__franchise_of__follows_ac12(
@@ -217,10 +239,17 @@ def test__in_scope__keeps_only_the_games_of_ac11(fields: dict[str, Any], expecte
     [
         ("N" * 255, None, ("n" * 255, None)),
         ("N" * 256, None, NameProblem.TOO_LONG),
+        ("\ufdfa" * 60, None, NameProblem.UNUSABLE),
         ("Zelda: Ocarina of Time", 912470400, ("zelda ocarina of time", 1998)),
         ("Hades", -631152000, ("hades", 1950)),
     ],
-    ids=["longest_name", "name_too_long", "year_from_timestamp", "year_1950"],
+    ids=[
+        "longest_name",
+        "name_too_long",
+        "too_long_once_normalized",
+        "year_from_timestamp",
+        "year_1950",
+    ],
 )
 def test__to_record__year_and_name_limit(
     name: str, released: int | None, expected: tuple[str, int | None] | NameProblem
@@ -320,6 +349,8 @@ async def test__import__never_deletes_and_refuses_what_would_break_a_stored_game
         make_record(4, "Planned Two"),  # answer of a puzzle with no games: allowed
         make_record(5, "Free Two"),  # allowed
         # igdb 6 is missing from this run (AC-17).
+        # A new game with the name "Guessed" meets the title that keeps it: a near-duplicate.
+        make_record(7, "Guessed", franchise={"id": 1, "name": "Old"}),
     ]
     counts = await upsert_titles(db_session, second)
 
@@ -334,6 +365,7 @@ async def test__import__never_deletes_and_refuses_what_would_break_a_stored_game
     }
     assert ids[2].franchise == "Old"
     assert (counts.refused, counts.updated, counts.unchanged) == (2, 3, 0)
+    assert (counts.added, counts.near_duplicates) == (0, 1)
     assert sorted(counts.refused_title_ids) == sorted([ids[1].id, ids[2].id])
 
 
@@ -360,3 +392,91 @@ async def test__import__a_new_record_with_the_name_and_year_of_a_stored_title_is
         2007,
         2011,
     ]
+
+
+async def stream(games: list[IgdbGame]) -> AsyncIterator[IgdbGame]:
+    for game in games:
+        yield game
+
+
+# Each row: the titles already stored (IGDB id, name, year), the games of the run (IGDB id, name,
+# year, ratings, franchise) and the stored titles after the run (IGDB id, name, franchise).
+ORDER_CASES = {
+    # A stored title is renamed while a new game takes its old name. The new one has the lower id
+    # (it is handled first) or the higher one, and every batch holds one record.
+    "rename_then_new_game_with_the_old_name": (
+        [(5, "Foo", 2001)],
+        [(3, "Foo", 2001, 5, None), (5, "Foo Remastered", 2001, 5, None)],
+        {(3, "Foo", None), (5, "Foo Remastered", None)},
+    ),
+    "rename_then_new_game_with_a_higher_id": (
+        [(5, "Foo", 2001)],
+        [(5, "Foo Remastered", 2001, 5, None), (7, "Foo", 2001, 5, None)],
+        {(5, "Foo Remastered", None), (7, "Foo", None)},
+    ),
+    # X takes Y's name and Y moves on, in one run.
+    "chain_of_renames": (
+        [(1, "A", 2001), (2, "B", 2001)],
+        [(1, "B", 2001, 5, None), (2, "C", 2001, 5, None)],
+        {(1, "B", None), (2, "C", None)},
+    ),
+    "swap_of_names": (
+        [(1, "A", 2001), (2, "B", 2001)],
+        [(1, "B", 2001, 5, None), (2, "A", 2001, 5, None)],
+        {(1, "B", None), (2, "A", None)},
+    ),
+    # A rename blocked by a title outside the run stays put, and its old name stays taken.
+    "blocked_rename_keeps_its_old_name_taken": (
+        [(None, "C", 2001), (1, "A", 2001), (2, "B", 2001)],
+        [(1, "C", 2001, 5, None), (2, "A", 2001, 5, None)],
+        {(None, "C", None), (1, "A", None), (2, "B", None)},
+    ),
+    # The stored title wins the name over a game with more ratings, so it keeps its updates.
+    "stored_title_wins_the_name": (
+        [(5, "Foo", 2001)],
+        [(3, "Foo", 2001, 900, None), (5, "Foo", 2001, 10, "Series")],
+        {(5, "Foo", "Series")},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("stored", "run", "expected"), list(ORDER_CASES.values()), ids=list(ORDER_CASES)
+)
+async def test__import__result_does_not_depend_on_the_order_and_a_second_run_changes_nothing(
+    db_session: AsyncSession,
+    stored: list[tuple[int | None, str, int]],
+    run: list[tuple[int, str, int, int, str | None]],
+    expected: set[tuple[int | None, str, str | None]],
+) -> None:
+    for igdb_id, name, year in stored:
+        await create_title(db_session, name=name, year=year, igdb_id=igdb_id)
+    # Mid-2001 and mid-2002 timestamps are far from a year edge.
+    released = {2001: 995000000, 2002: 1030000000}
+
+    async def run_once() -> titles_import.UpsertCounts:
+        games = [
+            make_game(
+                id=igdb_id,
+                name=name,
+                first_release_date=released[year],
+                total_rating_count=ratings,
+                **({"franchise": {"id": 1, "name": franchise}} if franchise else {}),
+            )
+            for igdb_id, name, year, ratings, franchise in run
+        ]
+        selection = await select_records(stream(games), stored_ids=await list_igdb_ids(db_session))
+        # One record to a batch: the keys cross every batch boundary.
+        return await upsert_titles(db_session, selection.records, batch_size=1)
+
+    async def stored_now() -> set[tuple[int | None, str, str | None]]:
+        result = await db_session.execute(select(Title.igdb_id, Title.name, Title.franchise))
+        return {(igdb_id, name, franchise) for igdb_id, name, franchise in result}
+
+    await run_once()
+    after_first = await stored_now()
+    second = await run_once()
+
+    assert after_first == expected
+    assert (second.added, second.updated, second.refused) == (0, 0, 0)
+    assert await stored_now() == after_first

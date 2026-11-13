@@ -270,7 +270,7 @@ async def time_searches(engine: AsyncEngine, queries: list[str]) -> None:
         f"p95 {p95:.1f} ms, max {timings_ms[-1]:.1f} ms, "
         f"median result size {statistics.median(size for _e, _q, size in timed)}."
     )
-    print(f"AC-24 target: p95 under 150 ms. {'PASS' if p95 < 150 else 'FAIL'}.")
+    print(f"Latency target: p95 under 150 ms. {'PASS' if p95 < 150 else 'FAIL'}.")
 
 
 async def remove_bench_titles(engine: AsyncEngine, *, vacuum_when_empty: bool) -> None:
@@ -312,13 +312,16 @@ def main() -> int:
     args = parser.parse_args()
     if args.existing and args.titles is not None:
         parser.error("--existing and --titles do not go together")
-    reason = refusal_reason()
+    if args.titles is not None and args.titles < 1:
+        parser.error("--titles must be at least 1")
+    # The benchmark writes no media, so S3 storage does not matter here.
+    reason = refusal_reason(needs_local_storage=False)
     if reason is not None:
         print(f"Refusing to run the benchmark: {reason}.")
         return 1
     if args.existing:
         return 0 if asyncio.run(run_existing()) else 1
-    return 0 if asyncio.run(run(args.titles or TITLE_COUNT)) else 1
+    return 0 if asyncio.run(run(TITLE_COUNT if args.titles is None else args.titles)) else 1
 
 
 if __name__ == "__main__":

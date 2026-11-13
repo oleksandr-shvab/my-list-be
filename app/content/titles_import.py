@@ -9,7 +9,7 @@ unchanged, with a count, when the change could break a stored game (AC-18, R-15)
 
 import re
 from collections import Counter
-from collections.abc import AsyncIterable, Iterator, Sequence
+from collections.abc import AsyncIterable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -19,15 +19,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.content.franchise_overrides import FRANCHISE_OVERRIDES, FranchiseSource
 from app.content.igdb import DropReason, GameType, IgdbGame, IgdbNamed, SkipReason
 from app.crud.title import (
+    StoredTitle,
     create_title,
-    find_near_duplicate,
+    find_key_holders,
+    get_stored_titles_by_igdb_ids,
     get_titles_by_igdb_ids,
     referenced_title_ids,
     title_changes,
     update_title,
 )
 from app.games.normalize import normalize_text
-from app.models.title import Title, TitleKind
+from app.models.title import TitleKind
 
 BATCH_SIZE = 1000
 # The column sizes of `titles` (`app/models/title.py`). NFKD can make a normalized name longer.
@@ -72,11 +74,6 @@ class ImportRecord:
         """Two records with one key would be one title in the list (AC-14)."""
         return (self.normalized_name, self.year)
 
-    @property
-    def rank(self) -> tuple[int, int]:
-        """The better record has the higher rank: more ratings, then the lower IGDB id."""
-        return (self.ratings, -self.igdb_id)
-
 
 def in_scope(game: IgdbGame) -> bool:
     """AC-10, AC-11. Candidate answers are a subset of this list by construction (R-20)."""
@@ -95,8 +92,8 @@ def clean_franchise(name: str) -> str:
 
 def franchise_of(game: IgdbGame) -> str | None:
     """IGDB's main franchise, else the game's first series (collection) by IGDB id (AC-12, Q4);
-    then the override list. A name that is empty after cleaning, or too long for the column, is
-    passed over for the next one."""
+    then the override list. A name that is empty after cleaning, or too long for the column (raw or
+    normalized), is passed over for the next one."""
     candidates: list[tuple[FranchiseSource, IgdbNamed]] = []
     if game.franchise is not None:
         candidates.append((FranchiseSource.FRANCHISE, game.franchise))
@@ -105,7 +102,11 @@ def franchise_of(game: IgdbGame) -> str | None:
     )
     for source, item in candidates:
         name = FRANCHISE_OVERRIDES.get((source, item.id)) or clean_franchise(item.name)
-        if name and len(name) <= MAX_FRANCHISE_LENGTH and normalize_text(name):
+        if not name or len(name) > MAX_FRANCHISE_LENGTH:
+            continue
+        # NFKD can make a name up to 18 times longer; the normalized column holds 1024.
+        normalized = normalize_text(name)
+        if normalized and len(normalized) <= MAX_NORMALIZED_NAME_LENGTH:
             return name
     return None
 
@@ -146,11 +147,23 @@ class Selection:
     name_problems: Counter[NameProblem] = field(default_factory=Counter)
 
 
-async def select_records(games: AsyncIterable[IgdbGame]) -> Selection:
-    """Keep one record per (normalized name, year): the one with more ratings, then the lower IGDB
-    id, whatever order IGDB sent them in (AC-14). Records come back in IGDB id order."""
+Key = tuple[str, int | None]
+
+
+async def select_records(
+    games: AsyncIterable[IgdbGame], *, stored_ids: Collection[int] = ()
+) -> Selection:
+    """Keep one record per (normalized name, year), whatever order IGDB sent them in (AC-14).
+    `stored_ids` is `list_igdb_ids`: the winner is a record whose IGDB id is already stored, so
+    that title keeps getting its updates and the run settles (a game with more ratings does not
+    push it out); then the one with more ratings, then the lower IGDB id. Records come back in
+    IGDB id order."""
+
+    def rank(record: ImportRecord) -> tuple[bool, int, int]:
+        return (record.igdb_id in stored_ids, record.ratings, -record.igdb_id)
+
     selection = Selection()
-    best: dict[tuple[str, int | None], ImportRecord] = {}
+    best: dict[Key, ImportRecord] = {}
     async for game in games:
         if not in_scope(game):
             selection.out_of_scope += 1
@@ -164,7 +177,7 @@ async def select_records(games: AsyncIterable[IgdbGame]) -> Selection:
             best[record.key] = record
             continue
         selection.near_duplicates += 1
-        if record.rank > current.rank:
+        if rank(record) > rank(current):
             best[record.key] = record
     selection.records = sorted(best.values(), key=lambda record: record.igdb_id)
     return selection
@@ -181,85 +194,105 @@ class UpsertCounts:
     refused_title_ids: list[int] = field(default_factory=list)
 
 
-def _batches(records: Sequence[ImportRecord], size: int) -> Iterator[Sequence[ImportRecord]]:
-    for start in range(0, len(records), size):
-        yield records[start : start + size]
+def _batches[T](items: Sequence[T], size: int) -> Iterator[Sequence[T]]:
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
+# The columns a stored game's replay reads (AC-18). The year and the display texts are not read.
+REPLAY_COLUMNS = frozenset({"normalized_name", "normalized_franchise"})
+KEY_COLUMNS = frozenset({"normalized_name", "year"})
 
 
 async def upsert_titles(
     db: AsyncSession, records: Sequence[ImportRecord], *, batch_size: int = BATCH_SIZE
 ) -> UpsertCounts:
     """Write the records. A stored title is matched by IGDB id; one that is not in `records` is
-    never touched, let alone deleted (AC-17). A new record that has the name and year of a stored
-    title is a near-duplicate and is not added (AC-14, AC-17)."""
+    never touched, let alone deleted (AC-17).
+
+    The whole run is planned before the first write, so the result is the same whatever the order
+    of the records or the size of a batch, and a second run changes nothing:
+    1. A stored title with a change that AC-18 refuses stays as it is (R-15).
+    2. A change that would give a title the name and year of another title is not made, and a new
+       record with the name and year of a title that stays is not added: a near-duplicate (AC-14).
+       "Another title that stays" is a stored title outside this run, or one of the run's own
+       that stays (refused or itself blocked). A title that is renamed away frees its old name, so
+       a chain or a swap of names goes through.
+    3. The updates are written, then the new titles, a batch at a time with a commit after each
+       (AC-16)."""
     counts = UpsertCounts()
-    for batch in _batches(records, batch_size):
-        stored = await get_titles_by_igdb_ids(db, [record.igdb_id for record in batch])
-        changed: list[tuple[Title, ImportRecord, frozenset[str]]] = []
-        for record in batch:
-            title = stored.get(record.igdb_id)
-            if title is None:
-                await _add(db, record, counts)
-                continue
-            changes = title_changes(
-                title, name=record.name, franchise=record.franchise, year=record.year
-            )
-            if changes:
-                changed.append((title, record, changes))
-            else:
-                counts.unchanged += 1
-        await _update(db, changed, counts)
-        await db.commit()
-    return counts
+    by_id = {record.igdb_id: record for record in records}
+    stored: dict[int, StoredTitle] = {}
+    for ids in _batches(list(by_id), batch_size):
+        stored.update(await get_stored_titles_by_igdb_ids(db, ids))
 
+    changes: dict[int, frozenset[str]] = {}
+    for igdb_id, title in stored.items():
+        record = by_id[igdb_id]
+        found = title_changes(title, name=record.name, franchise=record.franchise, year=record.year)
+        if found:
+            changes[igdb_id] = found
+        else:
+            counts.unchanged += 1
 
-async def _add(db: AsyncSession, record: ImportRecord, counts: UpsertCounts) -> None:
-    duplicate = await find_near_duplicate(
-        db, kind=TitleKind.VIDEO_GAME, normalized_name=record.normalized_name, year=record.year
-    )
-    if duplicate is not None:
-        counts.near_duplicates += 1
-        return
-    await create_title(
-        db, name=record.name, franchise=record.franchise, year=record.year, igdb_id=record.igdb_id
-    )
-    counts.added += 1
+    replay_ids = [stored[i].id for i, found in changes.items() if found & REPLAY_COLUMNS]
+    protected: set[int] = set()
+    for ids in _batches(replay_ids, batch_size):
+        protected |= await referenced_title_ids(db, ids)
+    refused = {i for i in changes if stored[i].id in protected}
+    counts.refused = len(refused)
+    counts.refused_title_ids = sorted(stored[i].id for i in refused)
 
+    renamed = {i for i, found in changes.items() if i not in refused and found & KEY_COLUMNS}
+    new_records = [record for record in records if record.igdb_id not in stored]
+    wanted = list({by_id[i].key for i in renamed} | {record.key for record in new_records})
+    # The keys that stay taken: titles outside the run, and the run's own titles that stay put.
+    taken: set[Key] = set()
+    for keys in _batches(wanted, batch_size):
+        for igdb_id, name, year in await find_key_holders(db, kind=TitleKind.VIDEO_GAME, keys=keys):
+            if igdb_id is None or igdb_id not in by_id:
+                taken.add((name, year))
+    taken |= {stored[i].key for i in refused}
+    blocked: set[int] = set()
+    while newly := {i for i in renamed - blocked if by_id[i].key in taken}:
+        # A blocked title keeps its old name, which may be what another rename wants.
+        blocked |= newly
+        taken |= {stored[i].key for i in newly}
+    counts.near_duplicates = len(blocked)
 
-# The columns a stored game's replay reads (AC-18). The year and the display texts are not read.
-REPLAY_COLUMNS = frozenset({"normalized_name", "normalized_franchise"})
-
-
-async def _update(
-    db: AsyncSession,
-    changed: Sequence[tuple[Title, ImportRecord, frozenset[str]]],
-    counts: UpsertCounts,
-) -> None:
-    """Apply the changes, except those AC-18 refuses. `kind` never changes here: every imported
-    title is a video game."""
-    touching_replay = [title.id for title, _, changes in changed if changes & REPLAY_COLUMNS]
-    protected = await referenced_title_ids(db, touching_replay)
-    for title, record, changes in changed:
-        if title.id in protected:
-            counts.refused += 1
-            counts.refused_title_ids.append(title.id)
-            continue
-        # A rename onto the name and year of another stored title would make a near-duplicate.
-        if changes & {"normalized_name", "year"}:
-            duplicate = await find_near_duplicate(
+    to_update = sorted(i for i in changes if i not in refused and i not in blocked)
+    for ids in _batches(to_update, batch_size):
+        titles = await get_titles_by_igdb_ids(db, ids)
+        for igdb_id in ids:
+            record = by_id[igdb_id]
+            await update_title(
                 db,
-                kind=TitleKind.VIDEO_GAME,
-                normalized_name=record.normalized_name,
+                titles[igdb_id],
+                name=record.name,
+                franchise=record.franchise,
                 year=record.year,
-                exclude_id=title.id,
+                flush=False,
             )
-            if duplicate is not None:
-                counts.near_duplicates += 1
-                continue
-        await update_title(
-            db, title, name=record.name, franchise=record.franchise, year=record.year
-        )
-        counts.updated += 1
+        await db.flush()
+        await db.commit()
+        counts.updated += len(ids)
+
+    to_add = [record for record in new_records if record.key not in taken]
+    counts.near_duplicates += len(new_records) - len(to_add)
+    for batch in _batches(to_add, batch_size):
+        for record in batch:
+            await create_title(
+                db,
+                name=record.name,
+                franchise=record.franchise,
+                year=record.year,
+                igdb_id=record.igdb_id,
+                flush=False,
+            )
+        await db.flush()
+        await db.commit()
+        counts.added += len(batch)
+    return counts
 
 
 @dataclass

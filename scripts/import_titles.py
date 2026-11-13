@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -31,14 +32,20 @@ from app.content.settings import ContentSettings, MissingSettingError
 from app.content.target import TargetRefusedError, check_target
 from app.content.titles_import import IGDB_WHERE, ImportReport, select_records, upsert_titles
 from app.core.clock import get_now
+from app.crud.title import list_igdb_ids
 
 
 async def run(settings: ContentSettings) -> ImportReport:
     from app.core.db import async_session_maker, engine
 
     try:
+        # First, so a database that is down stops the run before the long read.
+        async with async_session_maker() as db:
+            stored_ids = await list_igdb_ids(db)
         async with IgdbClient.from_settings(settings) as igdb:
-            selection = await select_records(igdb.games(now=get_now(), where=IGDB_WHERE))
+            selection = await select_records(
+                igdb.games(now=get_now(), where=IGDB_WHERE), stored_ids=stored_ids
+            )
             skipped, dropped = igdb.skipped, igdb.dropped
         print(f"Read {len(selection.records)} titles from IGDB; writing.")
         async with async_session_maker() as db:
@@ -70,6 +77,15 @@ def main() -> int:
         return 1
     except (IgdbError, FetchError, httpx.HTTPError) as error:
         print(f"import_titles: {error}", file=sys.stderr)
+        return 1
+    except (SQLAlchemyError, OSError) as error:
+        # The first line only: a SQLAlchemy message goes on to the statement and its parameters.
+        lines = str(error).splitlines()
+        print(
+            f"import_titles: database error ({type(error).__name__}): "
+            f"{lines[0] if lines else 'no message'}. Batches already committed stay; run again to carry on.",
+            file=sys.stderr,
+        )
         return 1
     print("\n".join(report.lines()))
     return 0

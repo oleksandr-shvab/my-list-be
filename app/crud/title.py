@@ -1,6 +1,7 @@
 from collections.abc import Collection, Sequence
+from typing import NamedTuple
 
-from sqlalchemy import desc, exists, func, select
+from sqlalchemy import and_, desc, exists, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_local
@@ -33,12 +34,14 @@ async def create_title(
     year: int | None = None,
     kind: TitleKind = TitleKind.VIDEO_GAME,
     igdb_id: int | None = None,
+    flush: bool = True,
 ) -> Title:
     """With `update_title`, the only place that writes `normalized_name` and
-    `normalized_franchise`."""
+    `normalized_franchise`. A bulk caller passes `flush=False` and flushes once."""
     title = Title(kind=kind, year=year, igdb_id=igdb_id, **_title_fields(name, franchise))
     db.add(title)
-    await db.flush()
+    if flush:
+        await db.flush()
     return title
 
 
@@ -50,6 +53,7 @@ async def update_title(
     franchise: str | None,
     year: int | None,
     igdb_id: int | None = None,
+    flush: bool = True,
 ) -> Title:
     """`igdb_id` is only set when given: a caller that does not know it never clears it."""
     for field, value in _title_fields(name, franchise).items():
@@ -57,12 +61,29 @@ async def update_title(
     title.year = year
     if igdb_id is not None:
         title.igdb_id = igdb_id
-    await db.flush()
+    if flush:
+        await db.flush()
     return title
 
 
+class StoredTitle(NamedTuple):
+    """The columns of a stored title that the import compares, without the ORM object."""
+
+    id: int
+    igdb_id: int
+    name: str
+    normalized_name: str
+    franchise: str | None
+    normalized_franchise: str | None
+    year: int | None
+
+    @property
+    def key(self) -> tuple[str, int | None]:
+        return (self.normalized_name, self.year)
+
+
 def title_changes(
-    title: Title, *, name: str, franchise: str | None, year: int | None
+    title: Title | StoredTitle, *, name: str, franchise: str | None, year: int | None
 ) -> frozenset[str]:
     """The columns `update_title` would change, by column name. The import uses it to leave a
     title alone when nothing changes, and to see whether a normalized column would move."""
@@ -86,22 +107,52 @@ async def get_titles_by_igdb_ids(db: AsyncSession, ids: Collection[int]) -> dict
     return {title.igdb_id: title for title in result.scalars() if title.igdb_id is not None}
 
 
-async def find_near_duplicate(
-    db: AsyncSession,
-    *,
-    kind: TitleKind,
-    normalized_name: str,
-    year: int | None,
-    exclude_id: int | None = None,
-) -> Title | None:
-    """A stored title with the same normalized name and the same year (no year matches no year),
-    the lowest id first (AC-14)."""
-    query = select(Title).where(Title.kind == kind, Title.normalized_name == normalized_name)
-    query = query.where(Title.year.is_(None) if year is None else Title.year == year)
-    if exclude_id is not None:
-        query = query.where(Title.id != exclude_id)
-    result = await db.execute(query.order_by(Title.id).limit(1))
-    return result.scalar_one_or_none()
+async def get_stored_titles_by_igdb_ids(
+    db: AsyncSession, ids: Collection[int]
+) -> dict[int, StoredTitle]:
+    """Like `get_titles_by_igdb_ids`, as plain rows: a whole import plans over these."""
+    if not ids:
+        return {}
+    result = await db.execute(
+        select(
+            Title.id,
+            Title.igdb_id,
+            Title.name,
+            Title.normalized_name,
+            Title.franchise,
+            Title.normalized_franchise,
+            Title.year,
+        ).where(Title.igdb_id.in_(ids))
+    )
+    return {row.igdb_id: StoredTitle(*row) for row in result}
+
+
+async def list_igdb_ids(db: AsyncSession) -> set[int]:
+    """The IGDB id of every stored title that has one."""
+    result = await db.execute(select(Title.igdb_id).where(Title.igdb_id.is_not(None)))
+    return {igdb_id for igdb_id in result.scalars() if igdb_id is not None}
+
+
+async def find_key_holders(
+    db: AsyncSession, *, kind: TitleKind, keys: Collection[tuple[str, int | None]]
+) -> list[tuple[int | None, str, int | None]]:
+    """Stored titles whose (normalized name, year) is one of `keys`, as (IGDB id, normalized name,
+    year). No year matches no year (AC-14). One query for all the keys."""
+    dated = [(name, year) for name, year in keys if year is not None]
+    undated = [name for name, year in keys if year is None]
+    matches = []
+    if dated:
+        matches.append(tuple_(Title.normalized_name, Title.year).in_(dated))
+    if undated:
+        matches.append(and_(Title.normalized_name.in_(undated), Title.year.is_(None)))
+    if not matches:
+        return []
+    result = await db.execute(
+        select(Title.igdb_id, Title.normalized_name, Title.year).where(
+            Title.kind == kind, or_(*matches)
+        )
+    )
+    return [(igdb_id, name, year) for igdb_id, name, year in result]
 
 
 async def referenced_title_ids(db: AsyncSession, ids: Collection[int]) -> set[int]:
