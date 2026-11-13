@@ -1,5 +1,4 @@
 from collections.abc import Collection, Sequence
-from typing import NamedTuple
 
 from sqlalchemy import and_, desc, exists, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,7 +36,7 @@ async def create_title(
     flush: bool = True,
 ) -> Title:
     """With `update_title`, the only place that writes `normalized_name` and
-    `normalized_franchise`. A bulk caller passes `flush=False` and flushes once."""
+    `normalized_franchise`. A bulk caller passes `flush=False` and lets its commit flush."""
     title = Title(kind=kind, year=year, igdb_id=igdb_id, **_title_fields(name, franchise))
     db.add(title)
     if flush:
@@ -66,24 +65,8 @@ async def update_title(
     return title
 
 
-class StoredTitle(NamedTuple):
-    """The columns of a stored title that the import compares, without the ORM object."""
-
-    id: int
-    igdb_id: int
-    name: str
-    normalized_name: str
-    franchise: str | None
-    normalized_franchise: str | None
-    year: int | None
-
-    @property
-    def key(self) -> tuple[str, int | None]:
-        return (self.normalized_name, self.year)
-
-
 def title_changes(
-    title: Title | StoredTitle, *, name: str, franchise: str | None, year: int | None
+    title: Title, *, name: str, franchise: str | None, year: int | None
 ) -> frozenset[str]:
     """The columns `update_title` would change, by column name. The import uses it to leave a
     title alone when nothing changes, and to see whether a normalized column would move."""
@@ -105,32 +88,6 @@ async def get_titles_by_igdb_ids(db: AsyncSession, ids: Collection[int]) -> dict
         return {}
     result = await db.execute(select(Title).where(Title.igdb_id.in_(ids)))
     return {title.igdb_id: title for title in result.scalars() if title.igdb_id is not None}
-
-
-async def get_stored_titles_by_igdb_ids(
-    db: AsyncSession, ids: Collection[int]
-) -> dict[int, StoredTitle]:
-    """Like `get_titles_by_igdb_ids`, as plain rows: a whole import plans over these."""
-    if not ids:
-        return {}
-    result = await db.execute(
-        select(
-            Title.id,
-            Title.igdb_id,
-            Title.name,
-            Title.normalized_name,
-            Title.franchise,
-            Title.normalized_franchise,
-            Title.year,
-        ).where(Title.igdb_id.in_(ids))
-    )
-    return {row.igdb_id: StoredTitle(*row) for row in result}
-
-
-async def list_igdb_ids(db: AsyncSession) -> set[int]:
-    """The IGDB id of every stored title that has one."""
-    result = await db.execute(select(Title.igdb_id).where(Title.igdb_id.is_not(None)))
-    return {igdb_id for igdb_id in result.scalars() if igdb_id is not None}
 
 
 async def find_key_holders(

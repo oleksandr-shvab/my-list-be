@@ -30,26 +30,44 @@ from app.content.fetch import FetchError
 from app.content.igdb import IgdbClient, IgdbError
 from app.content.settings import ContentSettings, MissingSettingError
 from app.content.target import TargetRefusedError, check_target
-from app.content.titles_import import IGDB_WHERE, ImportReport, select_records, upsert_titles
+from app.content.titles_import import (
+    IGDB_WHERE,
+    ImportReport,
+    UpsertCounts,
+    select_records,
+    upsert_titles,
+)
 from app.core.clock import get_now
-from app.crud.title import list_igdb_ids
+
+
+class DatabaseFailure(Exception):
+    """A database call failed. `is_committed` says whether an earlier batch was already kept."""
+
+    def __init__(self, error: Exception, *, is_committed: bool) -> None:
+        super().__init__(f"{type(error).__name__}: {first_line(error)}")
+        self.is_committed = is_committed
+
+
+def first_line(error: Exception) -> str:
+    """A SQLAlchemy message goes on to the statement and its parameters; keep the first line."""
+    lines = str(error).splitlines()
+    return lines[0] if lines else "no message"
 
 
 async def run(settings: ContentSettings) -> ImportReport:
     from app.core.db import async_session_maker, engine
 
     try:
-        # First, so a database that is down stops the run before the long read.
-        async with async_session_maker() as db:
-            stored_ids = await list_igdb_ids(db)
         async with IgdbClient.from_settings(settings) as igdb:
-            selection = await select_records(
-                igdb.games(now=get_now(), where=IGDB_WHERE), stored_ids=stored_ids
-            )
+            selection = await select_records(igdb.games(now=get_now(), where=IGDB_WHERE))
             skipped, dropped = igdb.skipped, igdb.dropped
         print(f"Read {len(selection.records)} titles from IGDB; writing.")
-        async with async_session_maker() as db:
-            counts = await upsert_titles(db, selection.records)
+        counts = UpsertCounts()
+        try:
+            async with async_session_maker() as db:
+                await upsert_titles(db, selection.records, counts=counts)
+        except (SQLAlchemyError, OSError) as error:
+            raise DatabaseFailure(error, is_committed=counts.commits > 0) from error
         return ImportReport(selection, counts, skipped=skipped, dropped=dropped)
     finally:
         await engine.dispose()
@@ -78,14 +96,17 @@ def main() -> int:
     except (IgdbError, FetchError, httpx.HTTPError) as error:
         print(f"import_titles: {error}", file=sys.stderr)
         return 1
-    except (SQLAlchemyError, OSError) as error:
-        # The first line only: a SQLAlchemy message goes on to the statement and its parameters.
-        lines = str(error).splitlines()
-        print(
-            f"import_titles: database error ({type(error).__name__}): "
-            f"{lines[0] if lines else 'no message'}. Batches already committed stay; run again to carry on.",
-            file=sys.stderr,
+    except DatabaseFailure as failure:
+        kept = (
+            "Batches already committed stay; run again to carry on."
+            if failure.is_committed
+            else "Nothing was written."
         )
+        print(f"import_titles: database error ({failure}). {kept}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        # Not the database: the database calls are wrapped in `run`.
+        print(f"import_titles: {type(error).__name__}: {first_line(error)}", file=sys.stderr)
         return 1
     print("\n".join(report.lines()))
     return 0

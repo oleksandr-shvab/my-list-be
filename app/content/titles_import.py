@@ -1,15 +1,16 @@
 """Fill the title list from IGDB (SPEC-04 AC-10 to AC-19).
 
 Two steps. `select_records` reads the games from IGDB (any async iterable of `IgdbGame`) and keeps
-what the list needs, one record per title (AC-14); it touches no database. `upsert_titles` writes
-the records: it matches stored titles by IGDB id, never deletes anything (AC-17), and leaves a title
-unchanged, with a count, when the change could break a stored game (AC-18, R-15). It commits every
-`BATCH_SIZE` titles, so a stopped run keeps its progress and a run again continues (AC-16).
+every record the list could use; it touches no database. `upsert_titles` plans the whole run
+against the database, then writes it. It matches stored titles by IGDB id, never deletes anything
+(AC-17), picks one title for each normalized name and year (AC-14, and the plan's "never replace a
+stored title") and leaves a title unchanged, with a count, when the change could break a stored
+game (AC-18, R-15). A stopped run keeps its committed batches and a run again continues (AC-16).
 """
 
 import re
 from collections import Counter
-from collections.abc import AsyncIterable, Collection, Iterator, Sequence
+from collections.abc import AsyncIterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -19,17 +20,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.content.franchise_overrides import FRANCHISE_OVERRIDES, FranchiseSource
 from app.content.igdb import DropReason, GameType, IgdbGame, IgdbNamed, SkipReason
 from app.crud.title import (
-    StoredTitle,
     create_title,
     find_key_holders,
-    get_stored_titles_by_igdb_ids,
     get_titles_by_igdb_ids,
     referenced_title_ids,
     title_changes,
     update_title,
 )
 from app.games.normalize import normalize_text
-from app.models.title import TitleKind
+from app.models.title import Title, TitleKind
 
 BATCH_SIZE = 1000
 # The column sizes of `titles` (`app/models/title.py`). NFKD can make a normalized name longer.
@@ -143,27 +142,17 @@ class Selection:
 
     records: list[ImportRecord] = field(default_factory=list)
     out_of_scope: int = 0
-    near_duplicates: int = 0
     name_problems: Counter[NameProblem] = field(default_factory=Counter)
 
 
 Key = tuple[str, int | None]
 
 
-async def select_records(
-    games: AsyncIterable[IgdbGame], *, stored_ids: Collection[int] = ()
-) -> Selection:
-    """Keep one record per (normalized name, year), whatever order IGDB sent them in (AC-14).
-    `stored_ids` is `list_igdb_ids`: the winner is a record whose IGDB id is already stored, so
-    that title keeps getting its updates and the run settles (a game with more ratings does not
-    push it out); then the one with more ratings, then the lower IGDB id. Records come back in
-    IGDB id order."""
-
-    def rank(record: ImportRecord) -> tuple[bool, int, int]:
-        return (record.igdb_id in stored_ids, record.ratings, -record.igdb_id)
-
+async def select_records(games: AsyncIterable[IgdbGame]) -> Selection:
+    """Every in-scope game whose name fits the list, in IGDB id order. Records that share a
+    normalized name and year are all kept: `upsert_titles` picks the one that becomes the title,
+    because that depends on what is stored."""
     selection = Selection()
-    best: dict[Key, ImportRecord] = {}
     async for game in games:
         if not in_scope(game):
             selection.out_of_scope += 1
@@ -172,14 +161,8 @@ async def select_records(
         if isinstance(record, NameProblem):
             selection.name_problems[record] += 1
             continue
-        current = best.get(record.key)
-        if current is None:
-            best[record.key] = record
-            continue
-        selection.near_duplicates += 1
-        if rank(record) > rank(current):
-            best[record.key] = record
-    selection.records = sorted(best.values(), key=lambda record: record.igdb_id)
+        selection.records.append(record)
+    selection.records.sort(key=lambda record: record.igdb_id)
     return selection
 
 
@@ -192,6 +175,8 @@ class UpsertCounts:
     refused: int = 0
     # The titles of the refused count, by database id (no names: a title may be a puzzle answer).
     refused_title_ids: list[int] = field(default_factory=list)
+    # Commits made so far, so a caller that sees an error knows whether anything was kept.
+    commits: int = 0
 
 
 def _batches[T](items: Sequence[T], size: int) -> Iterator[Sequence[T]]:
@@ -204,30 +189,110 @@ REPLAY_COLUMNS = frozenset({"normalized_name", "normalized_franchise"})
 KEY_COLUMNS = frozenset({"normalized_name", "year"})
 
 
+def _key_of(title: Title) -> Key:
+    return (title.normalized_name, title.year)
+
+
+def _best(records: Sequence[ImportRecord]) -> ImportRecord:
+    """AC-14: more ratings, then the lower IGDB id."""
+    return max(records, key=lambda record: (record.ratings, -record.igdb_id))
+
+
+@dataclass
+class KeyPlan:
+    blocked: set[int]  # IGDB ids of stored titles whose rename is not made
+    to_add: list[ImportRecord]
+    skipped_new: int  # new records left out because their name and year are taken
+
+
+def plan_keys(
+    groups: dict[Key, list[ImportRecord]],
+    titles: dict[int, Title],
+    *,
+    renamers: set[int],
+    refused: set[int],
+    outside: set[Key],
+) -> KeyPlan:
+    """Decide which record becomes the title of each normalized name and year.
+
+    A key is taken when a title that stays holds it: a stored title outside the run (`outside`), a
+    refused one or a blocked one (they keep their old key), or a stored title of the run that
+    already has it. Then nothing is added for the key and a stored title that wants it is blocked.
+    A stored title is never replaced (the plan's M1-21 step 3). On a free key a stored title that
+    takes it wins over new records; among the contenders of one kind more ratings win, then the
+    lower IGDB id (AC-14). A title that is renamed away frees its old key. A blocked title keeps its
+    old key, which can block another rename, so this repeats until no new title is blocked."""
+    blocked: set[int] = set()
+    while True:
+        fixed = outside | {_key_of(titles[igdb_id]) for igdb_id in refused | blocked}
+        found = set(blocked)
+        to_add: list[ImportRecord] = []
+        skipped_new = 0
+        for key, members in groups.items():
+            stored = [record for record in members if record.igdb_id in titles]
+            new = [record for record in members if record.igdb_id not in titles]
+            takers = [
+                record
+                for record in stored
+                if record.igdb_id in renamers and record.igdb_id not in blocked
+            ]
+            keepers = [
+                record
+                for record in stored
+                if record.igdb_id not in renamers and record.igdb_id not in refused
+            ]
+            if key in fixed or keepers:
+                found |= {record.igdb_id for record in takers}
+                skipped_new += len(new)
+            elif takers:
+                winner = _best(takers)
+                found |= {record.igdb_id for record in takers if record is not winner}
+                skipped_new += len(new)
+            elif new:
+                to_add.append(_best(new))
+                skipped_new += len(new) - 1
+        if found == blocked:
+            return KeyPlan(blocked=blocked, to_add=to_add, skipped_new=skipped_new)
+        blocked = found
+
+
+def _partial_fields(title: Title, record: ImportRecord) -> dict[str, Any]:
+    """What a blocked rename still writes: the franchise, and a display change of the name that
+    leaves the normalized name as it is. The name's identity and the year stay."""
+    same_name = record.normalized_name == title.normalized_name
+    return {
+        "name": record.name if same_name else title.name,
+        "franchise": record.franchise,
+        "year": title.year,
+    }
+
+
 async def upsert_titles(
-    db: AsyncSession, records: Sequence[ImportRecord], *, batch_size: int = BATCH_SIZE
+    db: AsyncSession,
+    records: Sequence[ImportRecord],
+    *,
+    batch_size: int = BATCH_SIZE,
+    counts: UpsertCounts | None = None,
 ) -> UpsertCounts:
     """Write the records. A stored title is matched by IGDB id; one that is not in `records` is
     never touched, let alone deleted (AC-17).
 
     The whole run is planned before the first write, so the result is the same whatever the order
     of the records or the size of a batch, and a second run changes nothing:
-    1. A stored title with a change that AC-18 refuses stays as it is (R-15).
-    2. A change that would give a title the name and year of another title is not made, and a new
-       record with the name and year of a title that stays is not added: a near-duplicate (AC-14).
-       "Another title that stays" is a stored title outside this run, or one of the run's own
-       that stays (refused or itself blocked). A title that is renamed away frees its old name, so
-       a chain or a swap of names goes through.
-    3. The updates are written, then the new titles, a batch at a time with a commit after each
-       (AC-16)."""
-    counts = UpsertCounts()
+    1. A stored title with a change that AC-18 refuses stays wholly as it is (R-15).
+    2. `plan_keys` picks the title of each name and year. A rename it blocks still writes the parts
+       that do not collide (`_partial_fields`).
+    3. All updates are written in one transaction, so a chain or a swap of names is never half
+       committed. Then the new titles, a batch at a time with a commit after each (AC-16).
+    Pass `counts` to read the commits made when an error stops the run."""
+    counts = UpsertCounts() if counts is None else counts
     by_id = {record.igdb_id: record for record in records}
-    stored: dict[int, StoredTitle] = {}
+    titles: dict[int, Title] = {}
     for ids in _batches(list(by_id), batch_size):
-        stored.update(await get_stored_titles_by_igdb_ids(db, ids))
+        titles.update(await get_titles_by_igdb_ids(db, ids))
 
     changes: dict[int, frozenset[str]] = {}
-    for igdb_id, title in stored.items():
+    for igdb_id, title in titles.items():
         record = by_id[igdb_id]
         found = title_changes(title, name=record.name, franchise=record.franchise, year=record.year)
         if found:
@@ -235,51 +300,51 @@ async def upsert_titles(
         else:
             counts.unchanged += 1
 
-    replay_ids = [stored[i].id for i, found in changes.items() if found & REPLAY_COLUMNS]
+    replay_ids = [titles[i].id for i, found in changes.items() if found & REPLAY_COLUMNS]
     protected: set[int] = set()
     for ids in _batches(replay_ids, batch_size):
         protected |= await referenced_title_ids(db, ids)
-    refused = {i for i in changes if stored[i].id in protected}
+    refused = {i for i in changes if titles[i].id in protected}
     counts.refused = len(refused)
-    counts.refused_title_ids = sorted(stored[i].id for i in refused)
+    counts.refused_title_ids = sorted(titles[i].id for i in refused)
 
-    renamed = {i for i, found in changes.items() if i not in refused and found & KEY_COLUMNS}
-    new_records = [record for record in records if record.igdb_id not in stored]
-    wanted = list({by_id[i].key for i in renamed} | {record.key for record in new_records})
-    # The keys that stay taken: titles outside the run, and the run's own titles that stay put.
-    taken: set[Key] = set()
+    renamers = {i for i, found in changes.items() if i not in refused and found & KEY_COLUMNS}
+    groups: dict[Key, list[ImportRecord]] = {}
+    for record in records:
+        groups.setdefault(record.key, []).append(record)
+    # Only the keys a rename or a new record can collide on are looked up.
+    wanted = [
+        key
+        for key, members in groups.items()
+        if any(m.igdb_id in renamers or m.igdb_id not in titles for m in members)
+    ]
+    outside: set[Key] = set()
     for keys in _batches(wanted, batch_size):
         for igdb_id, name, year in await find_key_holders(db, kind=TitleKind.VIDEO_GAME, keys=keys):
             if igdb_id is None or igdb_id not in by_id:
-                taken.add((name, year))
-    taken |= {stored[i].key for i in refused}
-    blocked: set[int] = set()
-    while newly := {i for i in renamed - blocked if by_id[i].key in taken}:
-        # A blocked title keeps its old name, which may be what another rename wants.
-        blocked |= newly
-        taken |= {stored[i].key for i in newly}
-    counts.near_duplicates = len(blocked)
+                outside.add((name, year))
+    plan = plan_keys(groups, titles, renamers=renamers, refused=refused, outside=outside)
+    counts.near_duplicates = len(plan.blocked) + plan.skipped_new
 
-    to_update = sorted(i for i in changes if i not in refused and i not in blocked)
-    for ids in _batches(to_update, batch_size):
-        titles = await get_titles_by_igdb_ids(db, ids)
-        for igdb_id in ids:
-            record = by_id[igdb_id]
-            await update_title(
-                db,
-                titles[igdb_id],
-                name=record.name,
-                franchise=record.franchise,
-                year=record.year,
-                flush=False,
-            )
-        await db.flush()
+    is_written = False
+    for igdb_id in changes:
+        if igdb_id in refused:
+            continue
+        title, record = titles[igdb_id], by_id[igdb_id]
+        fields = (
+            _partial_fields(title, record)
+            if igdb_id in plan.blocked
+            else {"name": record.name, "franchise": record.franchise, "year": record.year}
+        )
+        if title_changes(title, **fields):
+            await update_title(db, title, flush=False, **fields)
+            counts.updated += 1
+            is_written = True
+    if is_written:
         await db.commit()
-        counts.updated += len(ids)
+        counts.commits += 1
 
-    to_add = [record for record in new_records if record.key not in taken]
-    counts.near_duplicates += len(new_records) - len(to_add)
-    for batch in _batches(to_add, batch_size):
+    for batch in _batches(plan.to_add, batch_size):
         for record in batch:
             await create_title(
                 db,
@@ -289,8 +354,8 @@ async def upsert_titles(
                 igdb_id=record.igdb_id,
                 flush=False,
             )
-        await db.flush()
         await db.commit()
+        counts.commits += 1
         counts.added += len(batch)
     return counts
 
@@ -305,17 +370,13 @@ class ImportReport:
     skipped: Counter[SkipReason] = field(default_factory=Counter)
     dropped: Counter[DropReason] = field(default_factory=Counter)
 
-    @property
-    def near_duplicates(self) -> int:
-        return self.selection.near_duplicates + self.counts.near_duplicates
-
     def lines(self) -> list[str]:
         selection, counts = self.selection, self.counts
         lines = [
             f"titles added: {counts.added}",
             f"titles updated: {counts.updated}",
             f"titles unchanged: {counts.unchanged}",
-            f"kept as near-duplicates (not added): {self.near_duplicates}",
+            f"kept as near-duplicates (not added): {counts.near_duplicates}",
             f"refused to change, would break a stored game (AC-18): {counts.refused}",
             f"records skipped as invalid (AC-8): {sum(self.skipped.values())}"
             + _breakdown(self.skipped),

@@ -6,7 +6,7 @@ No network: the IGDB client reads `tests/fixtures/igdb/games_import.json` over
 import datetime as dt
 import json
 from collections import Counter
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -32,7 +32,7 @@ from app.content.titles_import import (
     to_record,
     upsert_titles,
 )
-from app.crud.title import create_title, list_igdb_ids
+from app.crud.title import create_title
 from app.models.progress import Progress, ProgressGuess, ProgressOrigin
 from app.models.title import Title
 from app.models.user import User
@@ -63,9 +63,7 @@ def make_record(igdb_id: int, name: str, **fields: Any) -> ImportRecord:
     return record
 
 
-async def read_fixture(
-    stored_ids: Collection[int] = (),
-) -> ImportReport:
+async def read_fixture() -> ImportReport:
     """A whole run over the fake IGDB, up to the upsert, like `scripts/import_titles.py`."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -77,9 +75,7 @@ async def read_fixture(
     async with IgdbClient(
         "fixture-id", SecretStr("fixture-secret"), transport=httpx.MockTransport(handler)
     ) as igdb:
-        selection = await select_records(
-            igdb.games(now=NOW, where=IGDB_WHERE), stored_ids=stored_ids
-        )
+        selection = await select_records(igdb.games(now=NOW, where=IGDB_WHERE))
         return ImportReport(
             selection, titles_import.UpsertCounts(), skipped=igdb.skipped, dropped=igdb.dropped
         )
@@ -292,11 +288,12 @@ async def test__import__fixture_run_keeps_one_doom_per_year_and_a_second_run_cha
     assert (second.added, second.updated, second.unchanged, second.refused) == (0, 0, 5, 0)
     assert await all_titles(db_session) == first_rows
     # AC-19: the counts, with the client's records skipped and items dropped kept apart.
-    assert report.selection.near_duplicates == 1
+    assert (first.near_duplicates, second.near_duplicates) == (1, 1)
     assert report.selection.out_of_scope == 3
     assert report.selection.name_problems == {NameProblem.TOO_LONG: 1}
     assert report.skipped == {SkipReason.NAME_WITHOUT_LETTERS: 1}
     assert report.dropped == {DropReason.GENRE_INVALID: 1}
+    report.counts = first
     lines = "\n".join(report.lines())
     assert "records skipped as invalid (AC-8): 1" in lines
     assert "items dropped from records that were kept: 1" in lines
@@ -351,6 +348,9 @@ async def test__import__never_deletes_and_refuses_what_would_break_a_stored_game
         # igdb 6 is missing from this run (AC-17).
         # A new game with the name "Guessed" meets the title that keeps it: a near-duplicate.
         make_record(7, "Guessed", franchise={"id": 1, "name": "Old"}),
+        # A new game with the name that the refused title wanted: that title cannot take it, so
+        # the name is free and the game is added.
+        make_record(8, "Guessed Again", franchise={"id": 1, "name": "Old"}),
     ]
     counts = await upsert_titles(db_session, second)
 
@@ -362,11 +362,16 @@ async def test__import__never_deletes_and_refuses_what_would_break_a_stored_game
         4: "Planned Two",
         5: "Free Two",
         6: "Gone",
+        8: "Guessed Again",
     }
     assert ids[2].franchise == "Old"
     assert (counts.refused, counts.updated, counts.unchanged) == (2, 3, 0)
-    assert (counts.added, counts.near_duplicates) == (0, 1)
+    assert (counts.added, counts.near_duplicates) == (1, 1)
     assert sorted(counts.refused_title_ids) == sorted([ids[1].id, ids[2].id])
+
+    # A second run with the same data changes nothing.
+    again = await upsert_titles(db_session, second)
+    assert (again.added, again.updated, again.refused, again.near_duplicates) == (0, 0, 2, 1)
 
 
 async def test__import__a_new_record_with_the_name_and_year_of_a_stored_title_is_not_added(
@@ -384,7 +389,7 @@ async def test__import__a_new_record_with_the_name_and_year_of_a_stored_title_is
 
     # An update onto the name and year of another stored title is a near-duplicate too.
     renamed = await upsert_titles(
-        db_session, [make_record(2, "portal", first_release_date=1191974400)]
+        db_session, [make_record(2, "Portal", first_release_date=1191974400)]
     )
 
     assert (renamed.updated, renamed.near_duplicates) == (0, 1)
@@ -431,6 +436,29 @@ ORDER_CASES = {
         [(1, "C", 2001, 5, None), (2, "A", 2001, 5, None)],
         {(None, "C", None), (1, "A", None), (2, "B", None)},
     ),
+    # A rename that a title outside the run blocks still writes the franchise.
+    "blocked_rename_keeps_its_franchise": (
+        [(None, "C", 2001), (1, "A", 2001)],
+        [(1, "C", 2001, 5, "Series")],
+        {(None, "C", None), (1, "A", "Series")},
+    ),
+    # A stored title that takes a name wins over a new game with more ratings (never replace a
+    # stored title); among new games, more ratings win (AC-14).
+    "stored_title_taking_the_name_wins": (
+        [(1, "Bar", 2001)],
+        [(1, "Foo", 2001, 5, None), (4, "Foo", 2001, 900, None)],
+        {(1, "Foo", None)},
+    ),
+    "two_stored_titles_take_one_name": (
+        [(1, "A", 2001), (2, "B", 2001)],
+        [(1, "Foo", 2001, 5, None), (2, "Foo", 2001, 900, None)],
+        {(1, "A", None), (2, "Foo", None)},
+    ),
+    "more_ratings_win_among_new_games": (
+        [],
+        [(3, "Foo", 2001, 10, None), (4, "Foo", 2001, 900, None)],
+        {(4, "Foo", None)},
+    ),
     # The stored title wins the name over a game with more ratings, so it keeps its updates.
     "stored_title_wins_the_name": (
         [(5, "Foo", 2001)],
@@ -465,7 +493,7 @@ async def test__import__result_does_not_depend_on_the_order_and_a_second_run_cha
             )
             for igdb_id, name, year, ratings, franchise in run
         ]
-        selection = await select_records(stream(games), stored_ids=await list_igdb_ids(db_session))
+        selection = await select_records(stream(games))
         # One record to a batch: the keys cross every batch boundary.
         return await upsert_titles(db_session, selection.records, batch_size=1)
 
@@ -473,10 +501,13 @@ async def test__import__result_does_not_depend_on_the_order_and_a_second_run_cha
         result = await db_session.execute(select(Title.igdb_id, Title.name, Title.franchise))
         return {(igdb_id, name, franchise) for igdb_id, name, franchise in result}
 
-    await run_once()
+    first = await run_once()
     after_first = await stored_now()
     second = await run_once()
 
     assert after_first == expected
+    # All updates in one transaction (a chain or a swap is never half committed), then one commit
+    # for each added title, as a batch holds one.
+    assert first.commits == (1 if first.updated else 0) + first.added
     assert (second.added, second.updated, second.refused) == (0, 0, 0)
     assert await stored_now() == after_first
