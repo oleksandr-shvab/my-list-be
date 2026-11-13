@@ -28,7 +28,9 @@ dev = [
 # Libraries the content scripts (app/content/, scripts/) need and the server does not. httpx is in
 # `dev` too, because the tests need it whatever the content scripts use. Both groups are default.
 content = [
+  "av>=19.0.2",
   "httpx>=0.28.1",
+  "pillow>=13.0.0",
 ]
 
 [tool.uv]
