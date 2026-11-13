@@ -74,7 +74,7 @@ TITLES = [
 ]
 
 # Steps 2 to 6 each carry one hint; step 1 (a pixelated crop) has none, so its hint is null.
-HINT_KINDS = [None, "metacritic_score", "platform", "genre", "year", "developer"]
+HINT_KINDS = [None, "critic_score", "platform", "genre", "year", "developer"]
 
 
 @dataclass(frozen=True)
@@ -83,13 +83,13 @@ class SeedPuzzle:
     days_from_today: int | None
     status: PuzzleStatus
     answer: str
-    has_metacritic_hint: bool = True
+    has_critic_hint: bool = True
 
 
 PUZZLES = [
     SeedPuzzle(0, PuzzleStatus.SCHEDULED, "Half-Life 2"),
     SeedPuzzle(-1, PuzzleStatus.SCHEDULED, "The Legend of Zelda: Breath of the Wild"),
-    SeedPuzzle(-2, PuzzleStatus.SCHEDULED, "Portal 2", has_metacritic_hint=False),
+    SeedPuzzle(-2, PuzzleStatus.SCHEDULED, "Portal 2", has_critic_hint=False),
     SeedPuzzle(-3, PuzzleStatus.SCHEDULED, "Hades"),
     SeedPuzzle(1, PuzzleStatus.SCHEDULED, "Celeste"),
     SeedPuzzle(None, PuzzleStatus.DRAFT, "Elden Ring"),
@@ -98,7 +98,7 @@ PUZZLES = [
 
 def _hint_value(kind: str | None, title: SeedTitle) -> str | None:
     values = {
-        "metacritic_score": "90",
+        "critic_score": "90",
         "platform": "PC",
         "genre": "Action",
         "year": str(title.year),
@@ -196,7 +196,7 @@ async def seed(db: AsyncSession, today: dt.date, *, media_dir: Path) -> None:
         await db.flush()
         clues: list[PuzzleClue] = []
         for step, kind in enumerate(HINT_KINDS, start=1):
-            if kind == "metacritic_score" and not seed_puzzle.has_metacritic_hint:
+            if kind == "critic_score" and not seed_puzzle.has_critic_hint:
                 kind = None
             value = _hint_value(kind, seed_titles[seed_puzzle.answer])
             clues.append(

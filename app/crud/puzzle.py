@@ -10,6 +10,7 @@ from sqlalchemy.orm import joinedload
 from app.models.game import Game
 from app.models.progress import Progress, ProgressGuess
 from app.models.puzzle import Puzzle, PuzzleClue, PuzzleStatus
+from app.models.title import Title
 
 
 def visible_puzzle_condition(today: dt.date) -> ColumnElement[bool]:
@@ -120,3 +121,15 @@ async def list_visible_puzzles(
         .options(joinedload(Puzzle.answer_title))
     )
     return list(result.scalars())
+
+
+async def list_answer_igdb_ids(db: AsyncSession, game_id: int) -> set[int]:
+    """The IGDB ids of every answer the game has had, in any status and variant (AC-25). A title
+    that did not come from IGDB has no id and is left out."""
+    result = await db.execute(
+        select(Title.igdb_id)
+        .join(Puzzle, Puzzle.answer_title_id == Title.id)
+        .where(Puzzle.game_id == game_id, Title.igdb_id.is_not(None))
+        .distinct()
+    )
+    return set(result.scalars())
