@@ -23,8 +23,11 @@ CHECKLIST = (
     "Step 1 is readable but hard",
     "No clue shows the game's name, logo or a character name",
     "The hints are correct",
-    "The clip plays and adds something",
+    "The clip plays (it may reuse the stills when the game has few screenshots)",
 )
+
+CLIP_FROM_STILLS = " · Clip made from the stills (decision 74)"
+NO_REBUILD_NOTE = "This game has too few screenshots to rebuild; reject as Never"
 
 # One screen at 1280 by 800 (AC-54): the six steps as a grid on the left, the answer and the
 # actions in a column on the right. The page has no script and no inline style, so the style is
@@ -135,6 +138,8 @@ class DraftView:
     answer_franchise: str | None
     clues: list[ClueView]
     queue_size: int
+    can_rebuild: bool = True  # False: the game has too few screenshots (decision 74)
+    clip_from_stills: bool = False  # step 6 reuses steps 2 to 5's screenshots
 
 
 def _file_url(file: FileView) -> str:
@@ -178,9 +183,17 @@ def _clue_caption(clue: ClueView) -> str:
 
 def draft_page(draft: DraftView, token: str) -> str:
     figures = "".join(
-        f"<figure>{_clue_media(clue)}<figcaption>{_clue_caption(clue)}</figcaption></figure>"
+        f"<figure>{_clue_media(clue)}<figcaption>{_clue_caption(clue)}"
+        f"{CLIP_FROM_STILLS if clue.step == 6 and draft.clip_from_stills else ''}"
+        "</figcaption></figure>"
         for clue in draft.clues
     )
+    rebuild = (
+        '<button class="rebuild" type="submit" name="reason" value="rebuild">Rebuild</button>'
+        if draft.can_rebuild
+        else ""
+    )
+    no_rebuild = "" if draft.can_rebuild else f"<p>{esc(NO_REBUILD_NOTE)}</p>"
     year = esc(draft.answer_year) if draft.answer_year is not None else "no year"
     franchise = esc(draft.answer_franchise) if draft.answer_franchise else "no franchise"
     checklist = "".join(
@@ -200,11 +213,9 @@ def draft_page(draft: DraftView, token: str) -> str:
         '<div class="actions"><button class="approve" type="submit">Approve</button></div>'
         "</form></section>"
         f'<section><h2>Reject</h2><form method="post" action="{base}/reject">{hidden}'
-        '<div class="actions">'
-        '<button class="rebuild" type="submit" name="reason" value="rebuild">'
-        "Rebuild</button>"
+        f'<div class="actions">{rebuild}'
         '<button class="never" type="submit" name="reason" value="never">Never</button>'
-        "</div></form></section></aside></div>"
+        f"</div>{no_rebuild}</form></section></aside></div>"
     )
     return page(f"Slot {slot}", body)
 

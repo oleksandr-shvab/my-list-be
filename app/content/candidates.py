@@ -1,4 +1,5 @@
-"""Who may be an answer, and which screenshots a build uses (SPEC-04 AC-21 to AC-25, AC-34, AC-37).
+"""Who may be an answer, and which screenshots a build uses (SPEC-04 AC-21 to AC-25, AC-34, AC-37,
+decision 74).
 
 Pure: IGDB games and settings in, choices out. Every choice takes its randomness from a stream of
 `app/content/seed.py`, over input sorted first, so it does not depend on the order IGDB answers in.
@@ -37,11 +38,21 @@ STEP_SCREENSHOTS = 4  # steps 2 to 5
 CROP_SCREENSHOTS = 1  # step 1
 MIN_CLIP_SCREENSHOTS = 2  # step 6
 MAX_CLIP_SCREENSHOTS = 3
-# The fewest screenshots a build needs (AC-34, AC-37), whatever the setting says.
-REQUIRED_SCREENSHOTS = STEP_SCREENSHOTS + CROP_SCREENSHOTS + MIN_CLIP_SCREENSHOTS
-# A rebuild leaves out every screenshot of every rejected draft of its slot (owner decision 71), so
-# a game that survives one rebuild has 7 usable screenshots for the draft and 7 more for the rebuild.
-REBUILD_SCREENSHOTS = 2 * REQUIRED_SCREENSHOTS
+# The fewest screenshots a build needs (AC-34, AC-37, decision 74), whatever the setting says: the
+# four of steps 2 to 5 and the crop's. A game with no more than that makes its clip from the stills.
+REQUIRED_SCREENSHOTS = STEP_SCREENSHOTS + CROP_SCREENSHOTS
+# The pool a clip of its own screenshots needs: the five above and two more. Below it the clip pans
+# over two or three of the four step 2 to 5 screenshots (AC-37).
+OWN_CLIP_SCREENSHOTS = REQUIRED_SCREENSHOTS + MIN_CLIP_SCREENSHOTS
+# The pool from which the clip may take a third screenshot of its own. It is the rule the builder
+# had before decision 74 (three more screenshots left beyond 12), kept as it was so that every game
+# with 7 or more screenshots gets the plan it always got and `GENERATOR_VERSION` stays.
+THIRD_CLIP_SCREENSHOTS = 15
+# A rebuild leaves out every screenshot of every rejected draft of its slot (owner decision 71) and
+# needs `REQUIRED_SCREENSHOTS` of the rest. A draft uses 7 screenshots from a pool of 7 to 14 (the
+# clip has two of its own), 5 from a pool of 5 or 6 (the clip reuses stills) and 7 or 8 from a pool
+# of 15 or more. So a pool of 12 is the smallest that always leaves 5 (12 - 7); 11 leaves 4.
+REBUILD_SCREENSHOTS = OWN_CLIP_SCREENSHOTS + REQUIRED_SCREENSHOTS
 
 
 class NotBuildableReason(StrEnum):
@@ -70,7 +81,7 @@ class FunnelStep(NamedTuple):
 class Funnel:
     """How many games pass each filter, in order, and the games that passed all (AC-24).
     `survive_one_rebuild` counts the candidates with enough screenshots for a rebuild that leaves
-    the five stills out (it is not a filter: a candidate stays a candidate)."""
+    out every screenshot of the first draft (it is not a filter: a candidate stays a candidate)."""
 
     steps: tuple[FunnelStep, ...]
     candidates: tuple[IgdbGame, ...]
@@ -229,19 +240,21 @@ def choose_answer(candidates: Sequence[IgdbGame], stream: random.Random) -> Igdb
 
 @dataclass(frozen=True)
 class ScreenshotPlan:
-    """Which screenshot goes where. Every one is used once: the step-1 crop is never one of the
-    four full screenshots of steps 2 to 5 (AC-34), and the clip uses none of the five (AC-37)."""
+    """Which screenshot goes where. The step-1 crop is never one of the four full screenshots of
+    steps 2 to 5 (AC-34), and those four are different. The clip uses none of the five when the game
+    has two more; otherwise it reuses two or three of the step 2 to 5 screenshots (AC-37)."""
 
     steps: tuple[IgdbScreenshot, ...]  # steps 2 to 5, in step order
     crop: IgdbScreenshot  # step 1
-    clip: tuple[IgdbScreenshot, ...]  # step 6, two or three
+    clip: tuple[IgdbScreenshot, ...]  # step 6, two or three, in clip order; may be stills
 
     @property
     def image_ids(self) -> list[str]:
-        """Every image id the draft used (the crop, steps 2 to 5, then the clip). A rejected draft's
-        `answer_exclusions.image_ids` holds all of them, and every later build of the slot leaves
-        them out (`rebuild_avoid_ids`)."""
-        return [shot.image_id for shot in (self.crop, *self.steps, *self.clip)]
+        """Every image id the draft used, once (the crop, steps 2 to 5, then the clip's own). A
+        rejected draft's `answer_exclusions.image_ids` holds all of them, and every later build of
+        the slot leaves them out (`rebuild_avoid_ids`). A clip that reuses stills adds nothing."""
+        shown = (shot.image_id for shot in (self.crop, *self.steps, *self.clip))
+        return list(dict.fromkeys(shown))
 
 
 def rebuild_avoid_ids(exclusions: Iterable[ExclusionRow], *, variant: str, slot: int) -> set[str]:
@@ -290,15 +303,24 @@ def assign_screenshots(
             NotBuildableReason.TOO_FEW_SCREENSHOTS,
             f"{len(pool)} usable screenshots, {REQUIRED_SCREENSHOTS} are needed",
         )
-    # A rebuild needs 7 screenshots the draft did not use, so the clip takes a third one only when
-    # that many are still left (a game with 14 usable screenshots survives one rebuild, `--counts`).
-    spare_for_clip = len(pool) - STEP_SCREENSHOTS - CROP_SCREENSHOTS - REQUIRED_SCREENSHOTS
-    max_clip = max(MIN_CLIP_SCREENSHOTS, min(MAX_CLIP_SCREENSHOTS, spare_for_clip))
-    clip_count = min(MIN_CLIP_SCREENSHOTS + draw_index(stream, 2), max_clip)
+    # 2 or 3 screenshots for the clip. The draw is made for every pool, so a pool of 7 or more
+    # draws what it always drew.
+    clip_count = MIN_CLIP_SCREENSHOTS + draw_index(stream, 2)
+    if len(pool) < OWN_CLIP_SCREENSHOTS:
+        # Decision 74: no two spare screenshots, so the clip pans over some of the four stills.
+        picks = draw_distinct(stream, pool, REQUIRED_SCREENSHOTS)
+        steps = picks[:STEP_SCREENSHOTS]
+        return ScreenshotPlan(
+            steps=tuple(steps),
+            crop=picks[STEP_SCREENSHOTS],
+            clip=tuple(draw_distinct(stream, steps, clip_count)),
+        )
+    if len(pool) < THIRD_CLIP_SCREENSHOTS:
+        clip_count = MIN_CLIP_SCREENSHOTS
     # One draw without replacement, so no screenshot can be in two places.
-    picks = draw_distinct(stream, pool, STEP_SCREENSHOTS + CROP_SCREENSHOTS + clip_count)
+    picks = draw_distinct(stream, pool, REQUIRED_SCREENSHOTS + clip_count)
     return ScreenshotPlan(
         steps=tuple(picks[:STEP_SCREENSHOTS]),
         crop=picks[STEP_SCREENSHOTS],
-        clip=tuple(picks[STEP_SCREENSHOTS + CROP_SCREENSHOTS :]),
+        clip=tuple(picks[REQUIRED_SCREENSHOTS:]),
     )

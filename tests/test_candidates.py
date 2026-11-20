@@ -95,17 +95,17 @@ ROWS: list[tuple[str, dict[str, Any], dict[str, Any], int]] = [
         {},
         3,
     ),
-    ("6 screenshots", {"screenshots": shots(6)}, {}, 4),
-    ("7 screenshots", {"screenshots": shots(7, width=1280, height=720)}, {}, 0),
+    ("4 screenshots", {"screenshots": shots(4)}, {}, 4),
+    ("5 screenshots", {"screenshots": shots(5, width=1280, height=720)}, {}, 0),
     (
-        "7 screenshots, one 1279 wide",
-        {"screenshots": shots(6) + shots(1, width=1279, start=6)},
+        "5 screenshots, one 1279 wide",
+        {"screenshots": shots(4) + shots(1, width=1279, start=4)},
         {},
         4,
     ),
     (
-        "7 screenshots, one 719 high",
-        {"screenshots": shots(6) + shots(1, height=719, start=6)},
+        "5 screenshots, one 719 high",
+        {"screenshots": shots(4) + shots(1, height=719, start=4)},
         {},
         4,
     ),
@@ -139,7 +139,7 @@ def test__funnel__thresholds_are_settings_and_candidates_are_in_the_search_list(
         SETTINGS.CANDIDATE_MIN_HEIGHT,
         SETTINGS.CANDIDATE_MIN_AGE_DAYS,
         SETTINGS.CANDIDATE_RATING_FIELD,
-    ) == (50, 7, 1280, 720, 365, "total_rating_count")
+    ) == (50, 5, 1280, 720, 365, "total_rating_count")
     games = [make_game(1, total_rating_count=20), make_game(2, screenshots=shots(8, width=1000))]
     loose = SETTINGS.model_copy(update={"CANDIDATE_MIN_RATINGS": 10, "CANDIDATE_MIN_WIDTH": 1000})
     result = funnel(
@@ -149,6 +149,13 @@ def test__funnel__thresholds_are_settings_and_candidates_are_in_the_search_list(
     # R-20: the search list takes every candidate, so the import scope must cover the types.
     assert CANDIDATE_TYPES <= IN_SCOPE_TYPES
     assert all(in_scope(game) for game in result.candidates)
+    # A build needs 5 screenshots (decision 74) whatever the setting says: a game with 4 never
+    # passes, and one with 5 passes, even when the setting asks for fewer.
+    few = SETTINGS.model_copy(update={"CANDIDATE_MIN_SCREENSHOTS": 1})
+    games = [make_game(1, screenshots=shots(4)), make_game(2, screenshots=shots(5))]
+    result = funnel(games, today=TODAY, settings=few, earlier_answer_igdb_ids=(), never_igdb_ids=())
+    assert [game.id for game in result.candidates] == [2]
+    assert result.steps[4].name == "at least 5 screenshots of 1280x720 or more"
     # The run asks IGDB only for rated candidate types (the import's floor of 1 rating, R-20).
     assert candidates_where(SETTINGS) == (
         "game_type = (0,8,9,10) & version_parent = null & total_rating_count >= 1"
@@ -171,8 +178,8 @@ def test__funnel__thresholds_are_settings_and_candidates_are_in_the_search_list(
     assert ContentSettings(CANDIDATE_MIN_RATINGS=1, CANDIDATE_MIN_AGE_DAYS=0, _env_file=None)
 
 
-@pytest.mark.parametrize("screenshot_count", [7, 8, 14, 15, 20])
-def test__assign_screenshots__crop_and_clip_never_reuse_a_step_screenshot(
+@pytest.mark.parametrize("screenshot_count", [5, 6, 7, 8, 14, 15, 20])
+def test__assign_screenshots__crop_never_reuses_a_step_screenshot_and_the_clip_does_so_only_below_7(
     screenshot_count: int,
 ) -> None:
     game = make_game(screenshots=shots(screenshot_count))
@@ -184,13 +191,22 @@ def test__assign_screenshots__crop_and_clip_never_reuse_a_step_screenshot(
         plan = assign_screenshots(game, stream, set(), settings=SETTINGS)
         step_ids = [shot.image_id for shot in plan.steps]
         clip_ids = [shot.image_id for shot in plan.clip]
-        assert len(step_ids) == 4
+        assert len(step_ids) == len(set(step_ids)) == 4  # AC-34
         assert plan.crop.image_id not in step_ids  # AC-34
-        assert not set(clip_ids) & {plan.crop.image_id, *step_ids}  # AC-37
-        assert len(set(step_ids + clip_ids + [plan.crop.image_id])) == len(step_ids + clip_ids) + 1
+        assert len(set(clip_ids)) == len(clip_ids)
+        if screenshot_count < 7:
+            # Decision 74: no two spare screenshots, so the clip is made of step 2 to 5 stills,
+            # never the crop's. They are used already, so the plan lists nothing twice.
+            assert set(clip_ids) <= set(step_ids)
+            assert plan.image_ids == [plan.crop.image_id, *step_ids]
+        else:
+            assert not set(clip_ids) & {plan.crop.image_id, *step_ids}  # AC-37
+            assert plan.image_ids == [plan.crop.image_id, *step_ids, *clip_ids]
+        assert len(plan.image_ids) == len(set(plan.image_ids))
         clip_sizes.add(len(clip_ids))
-    # Three clip shots only when 7 more are left for a rebuild: a game with 14 keeps clip 2.
-    assert clip_sizes == ({2} if screenshot_count <= 14 else {2, 3})
+    # Three clip shots of its own only from 15 (the rule from before decision 74); the stills'
+    # clip has two or three.
+    assert clip_sizes == ({2} if 7 <= screenshot_count <= 14 else {2, 3})
 
 
 def test__assign_screenshots__skips_avoided_ones_and_ignores_input_order() -> None:
@@ -205,9 +221,15 @@ def test__assign_screenshots__skips_avoided_ones_and_ignores_input_order() -> No
     shuffled = make_game(screenshots=list(reversed(shots(10))))
     again = assign_screenshots(shuffled, stream(Purpose.SCREENSHOTS), avoid, settings=SETTINGS)
     assert again == plan
-    with pytest.raises(NotBuildableError):  # 7 are left after 3 are avoided, 6 after a fourth
-        assign_screenshots(game, stream(Purpose.SCREENSHOTS), avoid | {"shot03"}, settings=SETTINGS)
-    assert REQUIRED_SCREENSHOTS == 7
+    # 7 are left after 3 are avoided; 5 are enough, so 5 avoided still builds and 6 do not.
+    avoid_five = avoid | {"shot03", "shot04"}
+    left = assign_screenshots(game, stream(Purpose.SCREENSHOTS), avoid_five, settings=SETTINGS)
+    assert len(left.image_ids) == 5
+    with pytest.raises(NotBuildableError):
+        assign_screenshots(
+            game, stream(Purpose.SCREENSHOTS), avoid_five | {"shot05"}, settings=SETTINGS
+        )
+    assert REQUIRED_SCREENSHOTS == 5
     candidates = [make_game(number) for number in (5, 3, 9, 1)]
     answer = choose_answer(candidates, stream(Purpose.ANSWER))
     assert choose_answer(list(reversed(candidates)), stream(Purpose.ANSWER)) == answer
@@ -237,15 +259,46 @@ def test__assign_screenshots__golden_plans_do_not_change_with_the_python_version
         ["shot17", "shot00", "shot06", "shot02", "shot04", "shot07", "shot10"],
     ]
 
+    # Decision 74: 5 and 6 screenshots. The plan lists the crop and the four stills; the clip is
+    # two or three of the stills, drawn after them (slot 1 of 5 and slot 1 of 6 draw three).
+    def clip(count: int, slot: int) -> list[str]:
+        stream = SlotSeed(
+            SecretStr(TEST_SALT), "game-guesser", "default", slot, "1", other_secrets=()
+        ).stream(Purpose.SCREENSHOTS)
+        game = make_game(screenshots=shots(count))
+        plan = assign_screenshots(game, stream, set(), settings=SETTINGS)
+        return [shot.image_id for shot in plan.clip]
+
+    assert [plan(5, slot) for slot in (1, 2, 3)] == [
+        ["shot03", "shot04", "shot01", "shot02", "shot00"],
+        ["shot04", "shot00", "shot02", "shot01", "shot03"],
+        ["shot02", "shot00", "shot01", "shot04", "shot03"],
+    ]
+    assert [clip(5, slot) for slot in (1, 2, 3)] == [
+        ["shot00", "shot02", "shot01"],
+        ["shot00", "shot01"],
+        ["shot03", "shot01"],
+    ]
+    assert [plan(6, slot) for slot in (1, 2, 3)] == [
+        ["shot04", "shot05", "shot02", "shot01", "shot03"],
+        ["shot05", "shot00", "shot02", "shot01", "shot03"],
+        ["shot03", "shot00", "shot01", "shot04", "shot05"],
+    ]
+    assert [clip(6, slot) for slot in (1, 2, 3)] == [
+        ["shot03", "shot01", "shot02"],
+        ["shot00", "shot01"],
+        ["shot05", "shot01"],
+    ]
+
 
 def rebuild_row(slot: int, image_ids: list[str], reason: str = "rebuild") -> ExclusionRow:
     return ExclusionRow(1, 100, reason, "default", slot, image_ids)
 
 
 def test__rebuild__leaves_out_every_screenshot_of_every_rejected_draft() -> None:
-    game = make_game(screenshots=shots(14))  # 7 for the draft and 7 for one rebuild
+    game = make_game(screenshots=shots(12))  # 7 for the draft and 5 for one rebuild
     first = assign_screenshots(game, stream_of(1, "1"), set(), settings=SETTINGS)
-    assert len(first.image_ids) == 7  # a game with 14 keeps 7 back for a rebuild
+    assert len(first.image_ids) == 7  # a game with 12 keeps 5 back for a rebuild
     rows = [
         rebuild_row(1, first.image_ids),
         rebuild_row(2, ["shot13"]),  # another slot's rows do not count
@@ -256,7 +309,9 @@ def test__rebuild__leaves_out_every_screenshot_of_every_rejected_draft() -> None
     assert rebuild_avoid_ids(rows, variant="other", slot=1) == set()
     second = assign_screenshots(game, stream_of(1, "2"), avoid, settings=SETTINGS)
     assert not set(second.image_ids) & avoid
-    # A second rejected draft of the slot: the union of both is left out, and 14 are gone.
+    assert len(second.image_ids) == 5  # 5 are left, so the rebuild's clip pans over its stills
+    assert {shot.image_id for shot in second.clip} <= {shot.image_id for shot in second.steps}
+    # A second rejected draft of the slot: the union of both is left out, and 12 are gone.
     rows.append(rebuild_row(1, second.image_ids))
     union = rebuild_avoid_ids(rows, variant="default", slot=1)
     assert union == set(first.image_ids) | set(second.image_ids)
@@ -272,14 +327,34 @@ def test__rebuild__leaves_out_every_screenshot_of_every_rejected_draft() -> None
     assert rebuild_avoid_ids([rebuild_row(2, ["x"])], variant="default", slot=1) == set()
     with pytest.raises(NotBuildableError) as few:
         assign_screenshots(
-            make_game(screenshots=shots(6)), stream_of(1, "1"), set(), settings=SETTINGS
+            make_game(screenshots=shots(4)), stream_of(1, "1"), set(), settings=SETTINGS
         )
     assert few.value.reason == NotBuildableReason.TOO_FEW_SCREENSHOTS
-    assert REBUILD_SCREENSHOTS == 14
 
 
-def test__funnel_counter__counts_one_rebuild_at_14_screenshots_and_can_keep_no_games() -> None:
-    games = [make_game(1, screenshots=shots(13)), make_game(2, screenshots=shots(14))]
+def test__rebuild_threshold__is_the_smallest_pool_that_always_leaves_five_after_a_draft() -> None:
+    """Decision 71 and 74: a rebuild needs 5 screenshots the draft did not use. The draft's size
+    depends on the pool (5 from 5 or 6, 7 from 7 to 14, 7 or 8 from 15), whatever the seed."""
+    survives = set()
+    for count in range(5, 31):
+        game = make_game(screenshots=shots(count))
+        left = {
+            count
+            - len(
+                assign_screenshots(game, stream_of(slot, "1"), set(), settings=SETTINGS).image_ids
+            )
+            for slot in range(1, 41)
+        }
+        if min(left) >= REQUIRED_SCREENSHOTS:
+            survives.add(count)
+        # The pool decides: no seed leaves enough where another does not.
+        assert (min(left) >= REQUIRED_SCREENSHOTS) == (max(left) >= REQUIRED_SCREENSHOTS)
+    assert survives == set(range(12, 31))
+    assert REBUILD_SCREENSHOTS == 12
+
+
+def test__funnel_counter__counts_one_rebuild_at_12_screenshots_and_can_keep_no_games() -> None:
+    games = [make_game(1, screenshots=shots(11)), make_game(2, screenshots=shots(12))]
     args: dict[str, Any] = {
         "today": TODAY,
         "settings": SETTINGS,

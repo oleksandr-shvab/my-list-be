@@ -9,8 +9,9 @@ traceback with locals, and a `SlotSeed` cannot be pickled. The choices use only 
 stream (the one method of the `random` module whose output is guaranteed across Python versions)
 through `draw_index` and `draw_distinct`, so a new Python cannot change a build.
 
-`GENERATOR_VERSION` belongs to the builder; it is raised whenever the choice logic changes, because
-the same inputs must then give other choices.
+`GENERATOR_VERSION` belongs to the builder; it is raised whenever the draw algorithm or its order
+changes, because the same inputs must then give other choices. Thresholds and candidate data are not
+part of it: they change which game a slot draws and leave the version alone.
 """
 
 import hashlib

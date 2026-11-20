@@ -7,9 +7,11 @@ any error rolls back and re-raises, so a refused or failed action leaves nothing
 
 import contextlib
 import datetime as dt
+from collections.abc import Iterable, Mapping, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.content.candidates import OWN_CLIP_SCREENSHOTS
 from app.crud.exclusion import add_exclusion, give_up_rebuild, list_exclusions
 from app.crud.puzzle import (
     delete_puzzle,
@@ -44,6 +46,27 @@ class RebuildRowsMismatchError(ReviewError):
 
 class NoBuildSlotError(ReviewError):
     """A puzzle with no build slot cannot be rebuilt; reject it as `never` or leave it."""
+
+
+class TooFewScreenshotsError(ReviewError):
+    """The draft used fewer than `OWN_CLIP_SCREENSHOTS` different screenshots, so its game had 5
+    or 6 (decision 74). A rebuild leaves out all of them and fewer than 5 remain: reject it as
+    `never`."""
+
+
+def can_rebuild(image_ids: Iterable[str]) -> bool:
+    """Whether a rebuild of a draft that used these screenshots could ever build. A draft uses 5
+    from a pool of 5 or 6 and at least 7 from a larger one, so fewer than 7 different ids means the
+    pool was too small. A larger pool can still run out (7 to 11): the builder reports
+    `cannot_rebuild` then, and `--give-up` frees the slot."""
+    return len(set(image_ids)) >= OWN_CLIP_SCREENSHOTS
+
+
+def clip_is_from_stills(per_step: Mapping[int, Sequence[str]]) -> bool:
+    """True when every screenshot of step 6 is also one of steps 2 to 5 (decision 74)."""
+    clip = set(per_step.get(6, ()))
+    stills = {image_id for step in (2, 3, 4, 5) for image_id in per_step.get(step, ())}
+    return bool(clip) and clip <= stills
 
 
 async def _load_for_review(db: AsyncSession, puzzle_id: int) -> Puzzle:
@@ -118,6 +141,11 @@ async def reject(db: AsyncSession, puzzle_id: int, reason: ExclusionReason) -> N
         if reason == ExclusionReason.REBUILD and puzzle.build_slot is None:
             raise NoBuildSlotError(f"puzzle {puzzle_id} has no build slot to rebuild")
         image_ids = _image_ids_in_step_order(await list_clue_image_ids(db, puzzle_id))
+        if reason == ExclusionReason.REBUILD and not can_rebuild(image_ids):
+            raise TooFewScreenshotsError(
+                f"puzzle {puzzle_id} came from a game with too few screenshots to rebuild;"
+                " reject it as never"
+            )
         is_never = reason == ExclusionReason.NEVER
         is_given_up = False
         if is_never and puzzle.build_slot is not None:

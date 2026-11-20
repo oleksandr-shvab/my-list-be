@@ -77,7 +77,8 @@ from app.media.writer import MediaWriter, storage_call, write_atomically
 from app.models.puzzle import PuzzleStatus
 from app.models.title import TitleKind
 
-# Raise this whenever the choice logic changes (R-8): the same inputs must then give other choices.
+# Raise this whenever the draw algorithm or its order changes (R-8): the same inputs must then give
+# other choices. Funnel thresholds and candidate data (settings, a new IGDB import) are not covered.
 # The golden tests of `tests/test_content_seed.py` and `tests/test_candidates.py` go red first.
 GENERATOR_VERSION = "1"
 
@@ -676,7 +677,7 @@ class Builder:
             game, title_id, record = self._forced(own_rows, candidates)
         else:
             game, title_id, record = await self._draw(candidates, seed)
-        # Raises `cannot_rebuild` when fewer than 7 usable screenshots are left.
+        # Raises `cannot_rebuild` when fewer than 5 usable screenshots are left.
         shots = assign_screenshots(
             game, seed.stream(Purpose.SCREENSHOTS), avoid, settings=self.settings
         )

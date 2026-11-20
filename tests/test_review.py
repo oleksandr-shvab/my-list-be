@@ -66,10 +66,10 @@ class World:
         clues = (
             await self.db.execute(select(PuzzleClue).where(PuzzleClue.puzzle_id == puzzle.id))
         ).scalars()
+        # By default a draft from a game with many screenshots: seven different ones.
+        default_ids = [[f"img{step}"] for step in range(1, 6)] + [["img6", "img7"]]
         for clue in clues:
-            clue.source_image_ids = (image_ids or [[f"img{clue.step}"] for _ in range(6)])[
-                clue.step - 1
-            ]
+            clue.source_image_ids = (image_ids or default_ids)[clue.step - 1]
         await self.db.commit()
         return puzzle
 
@@ -364,6 +364,31 @@ async def test__reject_rebuild__needs_a_slot(world: World) -> None:
     with pytest.raises(actions.NoBuildSlotError):
         await actions.reject(world.db, puzzle_id, ExclusionReason.REBUILD)
     assert await world.status_of(puzzle_id) == PuzzleStatus.IN_REVIEW
+
+
+# Decision 74: a draft from a game of 5 or 6 screenshots used 5 different ones and can never be
+# rebuilt (fewer than 5 would remain); from a larger pool it used 7 or more.
+STILLS_ONLY = [["c"], ["b"], ["a"], ["e"], ["d"], ["a", "e"]]  # 5 different, the clip reuses two
+SIX_IDS = [["c"], ["b"], ["a"], ["e"], ["d"], ["f", "a"]]
+
+
+async def test__reject_rebuild__refuses_a_draft_of_fewer_than_seven_screenshots(
+    world: World,
+) -> None:
+    refused = [
+        (await world.draft(slot, image_ids=image_ids)).id  # read once: a rollback expires objects
+        for slot, image_ids in enumerate([STILLS_ONLY, SIX_IDS, [[]] * 6], start=1)
+    ]
+    seven = (await world.draft(9)).id
+    for puzzle_id in refused:
+        with pytest.raises(actions.TooFewScreenshotsError):
+            await actions.reject(world.db, puzzle_id, ExclusionReason.REBUILD)
+        assert await world.status_of(puzzle_id) == PuzzleStatus.IN_REVIEW
+    assert await world.count(AnswerExclusion) == 0
+    # Never is still allowed, and so is a rebuild of a draft with seven different screenshots.
+    await actions.reject(world.db, refused[0], ExclusionReason.NEVER)
+    await actions.reject(world.db, seven, ExclusionReason.REBUILD)
+    assert await world.count(AnswerExclusion) == 2
 
 
 # (c) the page takes requests only from itself
@@ -679,21 +704,51 @@ async def test__draft_page_forms__work_with_the_pages_own_token_and_buttons(
 ) -> None:
     rebuilt = await world.draft(7)
     approved = await world.draft(8, title=1)
+    few = await world.draft(9, title=2, image_ids=STILLS_ONLY)
+    mixed = await world.draft(10, title=2, image_ids=[*STILLS_ONLY[:5], ["a", "z"]])
+    # Read once: a refused action rolls back and expires the objects.
+    crop_clip = await world.draft(11, title=2, image_ids=[*STILLS_ONLY[:5], ["c", "a"]])
+    rebuilt_id, approved_id, few_id, mixed_id, crop_clip_id = (
+        p.id for p in (rebuilt, approved, few, mixed, crop_clip)
+    )
 
-    forms = read_forms((await page.get(f"/drafts/{rebuilt.id}")).text)
+    # A game with too few screenshots has no Rebuild button, a note, and the clip is labelled.
+    few_page = (await page.get(f"/drafts/{few_id}")).text
+    assert [(f.action, f.buttons) for f in read_forms(few_page)] == [
+        (f"/drafts/{few_id}/approve", [("", "")]),
+        (f"/drafts/{few_id}/reject", [("reason", "never")]),
+    ]
+    assert "This game has too few screenshots to rebuild; reject as Never" in few_page
+    assert few_page.count("Clip made from the stills (decision 74)") == 1
+    # The server refuses it too, with the button hidden or not.
+    forms = read_forms(few_page)
+    response = await page.post(forms[1].action, data={**forms[1].hidden, "reason": "rebuild"})
+    assert response.status_code == 409
+    assert await world.status_of(few_id) == PuzzleStatus.IN_REVIEW
+    assert await world.count(AnswerExclusion) == 0
+
+    # A draft with a clip of its own has both, and no label or note. A clip that has one still
+    # and one other screenshot is not "made from the stills".
+    own_page = (await page.get(f"/drafts/{rebuilt_id}")).text
+    assert "too few screenshots" not in own_page and "made from the stills" not in own_page
+    assert "made from the stills" not in (await page.get(f"/drafts/{mixed_id}")).text
+    # Only steps 2 to 5 count: a clip that reuses the crop's screenshot is not from the stills.
+    assert "made from the stills" not in (await page.get(f"/drafts/{crop_clip_id}")).text
+
+    forms = read_forms((await page.get(f"/drafts/{rebuilt_id}")).text)
 
     assert [(f.action, f.buttons) for f in forms] == [
-        (f"/drafts/{rebuilt.id}/approve", [("", "")]),
-        (f"/drafts/{rebuilt.id}/reject", [("reason", "rebuild"), ("reason", "never")]),
+        (f"/drafts/{rebuilt_id}/approve", [("", "")]),
+        (f"/drafts/{rebuilt_id}/reject", [("reason", "rebuild"), ("reason", "never")]),
     ]
     response = await page.post(forms[1].action, data={**forms[1].hidden, "reason": "rebuild"})
-    assert (response.status_code, response.headers["location"]) == (303, f"/drafts/{approved.id}")
+    assert (response.status_code, response.headers["location"]) == (303, f"/drafts/{approved_id}")
     (row,) = await list_exclusions(world.db, world.game_id)
     assert (row.reason, row.build_slot) == (ExclusionReason.REBUILD, 7)
-    forms = read_forms((await page.get(f"/drafts/{approved.id}")).text)
+    forms = read_forms((await page.get(f"/drafts/{approved_id}")).text)
     response = await page.post(forms[0].action, data=forms[0].hidden)
     assert response.status_code == 303
-    assert await world.status_of(approved.id) == PuzzleStatus.APPROVED
+    assert await world.status_of(approved_id) == PuzzleStatus.APPROVED
 
 
 async def test__token__is_made_per_process_and_kept_for_its_life(world: World) -> None:
@@ -861,6 +916,11 @@ async def test__draft_page__shows_each_clue_as_the_player_sees_it(
     assert "2007" in markup.text and "Aperture" in markup.text
     assert markup.text.count("no hint") == 1  # step 3
     assert len(markup.find("input")) - 2 == 5  # the checklist, apart from the two tokens
+    # A clip made of the stills is not a defect, so the item does not ask the clip to add something.
+    assert (
+        "The clip plays (it may reuse the stills when the game has few screenshots)" in markup.text
+    )
+    assert "adds something" not in markup.text
     other_page = Markup((await page.get(f"/drafts/{other.id}")).text)
     assert other_page.text.count("no file") == 1
     assert len(other_page.find("img")) == 4

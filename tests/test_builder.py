@@ -926,8 +926,9 @@ async def reject_as_rebuild(db: AsyncSession, slot: int) -> list[str]:
 async def test__rebuild__avoids_every_rejected_screenshot_and_the_title_stays_in_its_slot(
     env: Env,
 ) -> None:
-    # One game with 14 screenshots: exactly one rebuild fits (decision 71).
-    first = make_game(1, screenshots=14)
+    # One game with 12 screenshots: exactly one rebuild fits (decisions 71 and 74): the draft uses 7
+    # and the rebuild's 5 are all that is left, so its clip pans over its own stills.
+    first = make_game(1, screenshots=12)
     other = make_game(2)
     igdb = FakeIgdb([first])
     await env.builder(igdb).run(SlotRequest(slots=range(1, 2)))
@@ -944,7 +945,13 @@ async def test__rebuild__avoids_every_rejected_screenshot_and_the_title_stays_in
     assert report.outcomes[0].status == SlotStatus.BUILT and report.outcomes[0].is_rebuild
     rebuilt = await puzzle_in_slot(env.db, 1)
     assert rebuilt.answer_title_id == answer_id
+    clues = await clues_of(env.db, rebuilt)
+    stills = {clue.source_image_ids[0] for clue in clues[:5]}  # the crop and steps 2 to 5
+    assert len(stills) == 5
+    # Step 6 names the stills its clip was made from, so a rejected rebuild records no new ones.
+    assert 2 <= len(clues[5].source_image_ids) <= 3 and set(clues[5].source_image_ids) <= stills
     second_ids = await reject_as_rebuild(env.db, 1)
+    assert len(second_ids) == 5
     assert not set(first_ids) & set(second_ids)  # AC-52: other screenshots, other crop
 
     # The union of both rows leaves nothing: not rebuildable, and the row stays.
